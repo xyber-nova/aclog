@@ -195,7 +195,11 @@ fn run_record_app(
                 Line::from(format!("题号: {problem_id}")),
                 Line::from(format!("文件: {file_name}")),
             ])
-            .block(Block::default().borders(Borders::ALL).title("选择要重写的记录"));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("选择要重写的记录"),
+            );
             let footer = Paragraph::new("↑/↓ 移动  Enter 确认  Esc 取消")
                 .block(Block::default().borders(Borders::ALL));
             frame.render_widget(header, chunks[0]);
@@ -780,12 +784,8 @@ mod tests {
             outcome => panic!("unexpected outcome: {outcome:?}"),
         }
 
-        match apply_submission_key_code(
-            KeyCode::Char('c'),
-            None,
-            &[],
-            SubmissionSelectorMode::Sync,
-        ) {
+        match apply_submission_key_code(KeyCode::Char('c'), None, &[], SubmissionSelectorMode::Sync)
+        {
             SelectionOutcome::Select(crate::models::SyncSelection::Chore) => {}
             outcome => panic!("unexpected outcome: {outcome:?}"),
         }

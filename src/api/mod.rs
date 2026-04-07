@@ -8,7 +8,7 @@ use tracing::{debug, info, instrument};
 
 use crate::{
     config::{AclogPaths, AppConfig},
-    models::{ProblemMetadata, SubmissionRecord},
+    domain::{problem::ProblemMetadata, submission::SubmissionRecord},
 };
 
 #[instrument(
@@ -22,7 +22,9 @@ pub async fn resolve_problem_metadata(
     problem_id: &str,
 ) -> Result<Option<ProblemMetadata>> {
     let cache_file = paths.problems_dir.join(format!("{problem_id}.toml"));
-    if let Some(metadata) = read_cached_metadata(&cache_file, config.settings.metadata_ttl_days)? {
+    if let Some(metadata) =
+        read_cached_metadata(&cache_file, config.settings.problem_metadata_ttl_days())?
+    {
         info!("元数据缓存命中");
         return Ok(Some(metadata));
     }
@@ -30,7 +32,11 @@ pub async fn resolve_problem_metadata(
 
     let client = luogu::LuoguClient::new(config)?;
     let metadata = client
-        .fetch_problem_metadata(problem_id, paths, config.settings.metadata_ttl_days)
+        .fetch_problem_metadata(
+            problem_id,
+            paths,
+            config.settings.problem_metadata_ttl_days(),
+        )
         .await?;
     if let Some(metadata) = &metadata {
         fs::write(
@@ -52,7 +58,7 @@ pub async fn fetch_problem_submissions(
 ) -> Result<Vec<SubmissionRecord>> {
     let client = luogu::LuoguClient::new(config)?;
     let submissions = client
-        .fetch_problem_submissions(problem_id, paths, config.settings.metadata_ttl_days)
+        .fetch_problem_submissions(problem_id, paths, config.settings.luogu_mappings_ttl_days())
         .await?;
     info!(submissions = submissions.len(), "已获取提交记录");
     Ok(submissions)
@@ -65,7 +71,7 @@ pub async fn load_algorithm_tag_names(
 ) -> Result<HashSet<String>> {
     let client = luogu::LuoguClient::new(config)?;
     let names = client
-        .load_algorithm_tag_names(paths, config.settings.metadata_ttl_days)
+        .load_algorithm_tag_names(paths, config.settings.luogu_tags_ttl_days())
         .await?;
     info!(algorithm_tags = names.len(), "已加载算法标签集合");
     Ok(names)

@@ -26,6 +26,12 @@ pub struct UserConfig {
 pub struct SettingsConfig {
     #[serde(default = "default_metadata_ttl_days")]
     pub metadata_ttl_days: i64,
+    #[serde(default)]
+    pub problem_metadata_ttl_days: Option<i64>,
+    #[serde(default)]
+    pub luogu_mappings_ttl_days: Option<i64>,
+    #[serde(default)]
+    pub luogu_tags_ttl_days: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,8 +56,27 @@ impl Default for AppConfig {
             },
             settings: SettingsConfig {
                 metadata_ttl_days: default_metadata_ttl_days(),
+                problem_metadata_ttl_days: Some(default_metadata_ttl_days()),
+                luogu_mappings_ttl_days: Some(default_metadata_ttl_days()),
+                luogu_tags_ttl_days: Some(default_metadata_ttl_days()),
             },
         }
+    }
+}
+
+impl SettingsConfig {
+    pub fn problem_metadata_ttl_days(&self) -> i64 {
+        self.problem_metadata_ttl_days
+            .unwrap_or(self.metadata_ttl_days)
+    }
+
+    pub fn luogu_mappings_ttl_days(&self) -> i64 {
+        self.luogu_mappings_ttl_days
+            .unwrap_or(self.metadata_ttl_days)
+    }
+
+    pub fn luogu_tags_ttl_days(&self) -> i64 {
+        self.luogu_tags_ttl_days.unwrap_or(self.metadata_ttl_days)
     }
 }
 
