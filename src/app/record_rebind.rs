@@ -5,6 +5,7 @@ use tracing::{debug, info, instrument};
 
 use crate::{config::AclogPaths, ui::interaction::UserInterface};
 
+use super::deps::AppDeps;
 use super::support::{
     history_records_for_file, rebind_selection_plan, resolve_solution_file_target,
     select_record_for_rebind, select_submission_for_record,
@@ -16,29 +17,41 @@ pub async fn run(
     file: PathBuf,
     record_rev: Option<String>,
     submission_id: Option<u64>,
+    deps: &impl AppDeps,
     ui: &impl UserInterface,
 ) -> Result<()> {
     info!("开始重绑记录");
 
     let paths = AclogPaths::new(workspace)?;
-    crate::vcs::ensure_jj_workspace(&paths.workspace_root)?;
-    let target = resolve_solution_file_target(&paths, &file).await?;
+    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    let target = resolve_solution_file_target(&paths, &file, deps).await?;
     let selection_plan = rebind_selection_plan(record_rev.as_deref(), submission_id);
-    let history_entries = crate::vcs::collect_commit_descriptions(&paths.workspace_root).await?;
+    let history_entries = deps
+        .collect_commit_descriptions(&paths.workspace_root)
+        .await?;
     let history_records = crate::commit_format::parse_historical_solve_records(&history_entries);
     let candidates = history_records_for_file(
         &history_records,
         &target.repo_relative_path,
         &target.problem_id,
     );
-    let selected_record =
-        select_record_for_rebind(&paths, &target, &candidates, record_rev.as_deref(), ui).await?;
+    let selected_record = select_record_for_rebind(
+        &paths,
+        &target,
+        &candidates,
+        record_rev.as_deref(),
+        deps,
+        ui,
+    )
+    .await?;
 
     let config = crate::config::load_config(&paths)?;
-    let metadata =
-        crate::api::resolve_problem_metadata(&config, &paths, &target.problem_id).await?;
-    let submissions =
-        crate::api::fetch_problem_submissions(&config, &paths, &target.problem_id).await?;
+    let metadata = deps
+        .resolve_problem_metadata(&config, &paths, &target.problem_id)
+        .await?;
+    let submissions = deps
+        .fetch_problem_submissions(&config, &paths, &target.problem_id)
+        .await?;
     let record = select_submission_for_record(
         &target.problem_id,
         metadata.as_ref(),
@@ -53,12 +66,8 @@ pub async fn run(
         metadata.as_ref(),
         &record,
     );
-    crate::vcs::rewrite_commit_description(
-        &paths.workspace_root,
-        &selected_record.revision,
-        &message,
-    )
-    .await?;
+    deps.rewrite_commit_description(&paths.workspace_root, &selected_record.revision, &message)
+        .await?;
 
     info!(
         problem_id = target.problem_id,

@@ -7,11 +7,14 @@ use crate::{
     config::AclogPaths,
     domain::{
         problem::ProblemMetadata,
+        record::FileRecordSummary,
         record::{HistoricalSolveRecord, SyncSelection},
         submission::SubmissionRecord,
     },
     ui::interaction::UserInterface,
 };
+
+use super::deps::RepoGateway;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SolutionFileTarget {
@@ -28,6 +31,7 @@ pub(crate) struct RebindSelectionPlan {
 pub(crate) async fn resolve_solution_file_target(
     paths: &AclogPaths,
     file: &Path,
+    repo: &impl RepoGateway,
 ) -> Result<SolutionFileTarget> {
     let absolute_path = if file.is_absolute() {
         file.to_path_buf()
@@ -54,7 +58,10 @@ pub(crate) async fn resolve_solution_file_target(
         .ok_or_else(|| eyre!("无法解析文件名 {}", canonical_path.display()))?;
     let problem_id = crate::problem::extract_problem_id(file_name)
         .ok_or_else(|| eyre!("无法从文件名 {} 提取题号", file_name))?;
-    if !crate::vcs::is_tracked_file(&paths.workspace_root, &repo_relative_path).await? {
+    if !repo
+        .is_tracked_file(&paths.workspace_root, &repo_relative_path)
+        .await?
+    {
         return Err(eyre!("文件 {} 未被当前 jj 工作区跟踪", repo_relative_path));
     }
     Ok(SolutionFileTarget {
@@ -115,6 +122,7 @@ pub(crate) async fn select_record_for_rebind(
     target: &SolutionFileTarget,
     candidates: &[HistoricalSolveRecord],
     record_rev: Option<&str>,
+    repo: &impl RepoGateway,
     ui: &impl UserInterface,
 ) -> Result<HistoricalSolveRecord> {
     if candidates.is_empty() {
@@ -125,8 +133,9 @@ pub(crate) async fn select_record_for_rebind(
     }
 
     if let Some(record_rev) = record_rev {
-        let revision =
-            crate::vcs::resolve_single_commit_id(&paths.workspace_root, record_rev).await?;
+        let revision = repo
+            .resolve_single_commit_id(&paths.workspace_root, record_rev)
+            .await?;
         let entry = candidates
             .iter()
             .find(|entry| entry.revision == revision)
@@ -178,13 +187,12 @@ pub(crate) fn should_fetch_submissions(change_kind: crate::vcs::ProblemFileChang
     matches!(change_kind, crate::vcs::ProblemFileChangeKind::Active)
 }
 
-pub(crate) fn print_record_list(records: &[crate::domain::record::FileRecordSummary]) {
+pub(crate) fn render_record_list(records: &[FileRecordSummary]) -> String {
     if records.is_empty() {
-        println!("当前工作区还没有已记录的解法文件");
-        return;
+        return "当前工作区还没有已记录的解法文件\n".to_string();
     }
 
-    println!("FILE\tPID\tVERDICT\tDIFF\tSUBMISSION\tRECORDED-AT\tTITLE");
+    let mut lines = vec!["FILE\tPID\tVERDICT\tDIFF\tSUBMISSION\tRECORDED-AT\tTITLE".to_string()];
     for record in records {
         let submission_id = record
             .submission_id
@@ -194,7 +202,7 @@ pub(crate) fn print_record_list(records: &[crate::domain::record::FileRecordSumm
             .submission_time
             .map(|value| value.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "-".to_string());
-        println!(
+        lines.push(format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             record.file_name,
             record.problem_id,
@@ -203,8 +211,9 @@ pub(crate) fn print_record_list(records: &[crate::domain::record::FileRecordSumm
             submission_id,
             recorded_at,
             record.title,
-        );
+        ));
     }
+    format!("{}\n", lines.join("\n"))
 }
 
 #[cfg(test)]

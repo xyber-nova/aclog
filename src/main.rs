@@ -1,21 +1,10 @@
-mod api;
-mod app;
-mod cli;
-mod commit_format;
-mod config;
-mod domain;
-mod models;
-mod problem;
-mod telemetry;
-mod tui;
-mod ui;
-mod vcs;
+#![recursion_limit = "256"]
 
 use color_eyre::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    telemetry::init_tracing()?;
+    aclog::telemetry::init_tracing()?;
     color_eyre::install()?;
-    cli::run().await
+    aclog::cli::run().await
 }

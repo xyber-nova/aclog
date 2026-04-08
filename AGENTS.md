@@ -44,22 +44,32 @@
 
 ## 目录职责
 
+- `src/lib.rs`
+  - library 入口，供集成测试和二进制入口共享
 - `src/main.rs`
-  - 程序入口
+  - 二进制入口
 - `src/cli.rs`
-  - 命令解析与 `sync` 主流程
+  - 命令解析与 CLI 分发
+- `src/app/`
+  - 应用层 workflow 编排与依赖注入接口
 - `src/config.rs`
   - `.aclog` 路径解析与配置读取
 - `src/api/`
   - 洛谷 HTTP 客户端、元数据与提交记录读取、缓存逻辑
+- `src/domain/`
+  - 领域模型与统计聚合
+- `src/commit_format.rs`
+  - `solve(...)` / `remove(...)` commit message 构造与解析
 - `src/problem.rs`
   - 从文件名提取题号
 - `src/tui.rs`
   - 提交记录选择界面
-- `src/vcs.rs`
-  - `jj` 相关操作与 commit 创建
+- `src/ui/`
+  - 交互抽象与 TUI 适配
+- `src/vcs/`
+  - `jj` 相关读写能力
 - `src/models.rs`
-  - 数据模型与 commit message 拼装
+  - 向后兼容 re-export
 
 ## `jj` 读写分离约束
 
@@ -87,10 +97,13 @@
 - `.aclog/luogu-mappings.toml`
   - 从 `/_lfe/config` 拉取的洛谷共享映射缓存
 
-当前 `metadata_ttl_days` 同时用于：
+当前缓存 TTL 现在分为三个字段：
 
-- 题目元数据缓存
-- 洛谷共享映射缓存
+- `problem_metadata_ttl_days`：题目元数据缓存
+- `luogu_mappings_ttl_days`：洛谷共享映射缓存
+- `luogu_tags_ttl_days`：洛谷标签字典缓存
+
+`metadata_ttl_days` 仍可作为旧配置回退值。
 
 ## 洛谷 API 索引
 
@@ -182,3 +195,19 @@
   - 一个变更文件
   - 一次选择
   - 一个 commit
+
+## 测试约定
+
+- 默认测试套件必须可离线运行：
+  - `cargo test` 不依赖真实 Luogu 网络
+  - `cargo test` 不依赖真实 Luogu 账号凭据
+- 自动化测试分三层：
+  - 模块内单元测试
+  - 使用 fake 依赖的 workflow 集成测试
+  - 使用真实临时 `jj` 工作区的集成测试
+- `tests/support/` 负责共享 fake provider、fake repo、fake UI、输出捕获器和工作区 fixture；新增测试优先复用这些工具。
+- 非交互 CLI 输出优先设计为“纯渲染函数 + 输出分发”，避免测试依赖全局 stdout 捕获。
+- 默认 CI 门禁执行：
+  - `cargo fmt --check`
+  - `cargo check`
+  - `cargo test`

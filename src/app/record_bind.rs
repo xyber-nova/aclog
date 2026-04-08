@@ -5,6 +5,7 @@ use tracing::{debug, info, instrument};
 
 use crate::{config::AclogPaths, ui::interaction::UserInterface};
 
+use super::deps::AppDeps;
 use super::support::{
     resolve_solution_file_target, select_submission_for_record, submission_selection_plan,
 };
@@ -14,20 +15,23 @@ pub async fn run(
     workspace: PathBuf,
     file: PathBuf,
     submission_id: Option<u64>,
+    deps: &impl AppDeps,
     ui: &impl UserInterface,
 ) -> Result<()> {
     info!("开始手工绑定记录");
 
     let paths = AclogPaths::new(workspace)?;
-    crate::vcs::ensure_jj_workspace(&paths.workspace_root)?;
-    let target = resolve_solution_file_target(&paths, &file).await?;
+    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    let target = resolve_solution_file_target(&paths, &file, deps).await?;
     let needs_submission_choice = submission_selection_plan(submission_id);
     let config = crate::config::load_config(&paths)?;
 
-    let metadata =
-        crate::api::resolve_problem_metadata(&config, &paths, &target.problem_id).await?;
-    let submissions =
-        crate::api::fetch_problem_submissions(&config, &paths, &target.problem_id).await?;
+    let metadata = deps
+        .resolve_problem_metadata(&config, &paths, &target.problem_id)
+        .await?;
+    let submissions = deps
+        .fetch_problem_submissions(&config, &paths, &target.problem_id)
+        .await?;
     let record = select_submission_for_record(
         &target.problem_id,
         metadata.as_ref(),
@@ -42,7 +46,7 @@ pub async fn run(
         metadata.as_ref(),
         &record,
     );
-    crate::vcs::create_commits_for_files(
+    deps.create_commits_for_files(
         &paths.workspace_root,
         &[(target.repo_relative_path.clone(), message)],
     )

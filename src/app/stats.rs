@@ -5,17 +5,21 @@ use tracing::{info, instrument};
 
 use crate::ui::interaction::UserInterface;
 
+use super::deps::AppDeps;
+
 #[instrument(level = "info", skip_all, fields(workspace = %workspace.display()))]
-pub async fn run(workspace: PathBuf, ui: &impl UserInterface) -> Result<()> {
+pub async fn run(workspace: PathBuf, deps: &impl AppDeps, ui: &impl UserInterface) -> Result<()> {
     info!("开始统计");
 
     let paths = crate::config::AclogPaths::new(workspace)?;
-    crate::vcs::ensure_jj_workspace(&paths.workspace_root)?;
+    deps.ensure_jj_workspace(&paths.workspace_root).await?;
     let config = crate::config::load_config(&paths)?;
 
-    let messages = crate::vcs::collect_solve_commit_messages(&paths.workspace_root).await?;
+    let messages = deps
+        .collect_solve_commit_messages(&paths.workspace_root)
+        .await?;
     let records = crate::commit_format::parse_solve_records(&messages);
-    let algorithm_tag_names = crate::api::load_algorithm_tag_names(&config, &paths).await?;
+    let algorithm_tag_names = deps.load_algorithm_tag_names(&config, &paths).await?;
     let summary =
         crate::domain::stats::summarize_solve_records(&records, Some(&algorithm_tag_names));
 

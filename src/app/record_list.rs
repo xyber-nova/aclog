@@ -5,24 +5,33 @@ use tracing::{info, instrument};
 
 use crate::config::AclogPaths;
 
-use super::support::print_record_list;
+use super::{deps::AppDeps, support::render_record_list};
+
+pub fn render_output(records: &[crate::domain::record::FileRecordSummary]) -> String {
+    render_record_list(records)
+}
 
 #[instrument(level = "info", skip_all, fields(workspace = %workspace.display()))]
-pub async fn run(workspace: PathBuf) -> Result<()> {
+pub async fn run(workspace: PathBuf, deps: &impl AppDeps) -> Result<()> {
     info!("开始列出已记录文件");
 
     let paths = AclogPaths::new(workspace)?;
-    crate::vcs::ensure_jj_workspace(&paths.workspace_root)?;
-    let history_entries = crate::vcs::collect_commit_descriptions(&paths.workspace_root).await?;
+    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    let history_entries = deps
+        .collect_commit_descriptions(&paths.workspace_root)
+        .await?;
     let history_records = crate::commit_format::parse_historical_solve_records(&history_entries);
     let summaries = crate::domain::stats::latest_records_by_file(&history_records);
     let mut tracked_summaries = Vec::with_capacity(summaries.len());
     for summary in summaries {
-        if crate::vcs::is_tracked_file(&paths.workspace_root, &summary.file_name).await? {
+        if deps
+            .is_tracked_file(&paths.workspace_root, &summary.file_name)
+            .await?
+        {
             tracked_summaries.push(summary);
         }
     }
-    print_record_list(&tracked_summaries);
+    deps.write_output(&render_output(&tracked_summaries))?;
 
     info!(records = tracked_summaries.len(), "已输出记录列表");
     Ok(())
