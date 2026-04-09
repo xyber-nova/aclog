@@ -11,10 +11,13 @@ use aclog::{
     app::deps::{OutputSink, ProblemProvider, RepoGateway},
     config::{AclogPaths, AppConfig},
     domain::{
+        browser::BrowserQuery,
         problem::ProblemMetadata,
-        record::{HistoricalSolveRecord, SolveRecord, SyncSelection},
-        stats::StatsSummary,
+        record::{HistoricalSolveRecord, SolveRecord, SyncSelection, TrainingFields},
+        record_index::RecordIndex,
+        stats::{StatsDashboard, StatsSummary},
         submission::SubmissionRecord,
+        sync_batch::{SyncBatchSession, SyncSessionChoice, SyncSessionItem},
     },
     ui::interaction::UserInterface,
     vcs::{ProblemFileChange, ProblemFileChangeKind},
@@ -217,11 +220,15 @@ impl OutputSink for FakeDeps {
 
 #[derive(Default)]
 pub struct FakeUi {
+    pub sync_session_choice: Mutex<Option<SyncSessionChoice>>,
+    pub sync_batch_review_selection: Mutex<Vec<Option<usize>>>,
     pub submission_selection: Mutex<Option<SyncSelection>>,
     pub record_submission_selection: Mutex<Option<Option<SubmissionRecord>>>,
     pub record_to_rebind_selection: Mutex<Option<Option<HistoricalSolveRecord>>>,
     pub delete_confirmation: Mutex<Option<SyncSelection>>,
     pub shown_stats: Mutex<Vec<StatsSummary>>,
+    pub shown_dashboards: Mutex<Vec<StatsDashboard>>,
+    pub opened_browsers: Mutex<Vec<BrowserQuery>>,
 }
 
 impl FakeUi {
@@ -255,6 +262,56 @@ impl FakeUi {
 }
 
 impl UserInterface for FakeUi {
+    fn choose_sync_session_action(
+        &self,
+        _workspace_root: &Path,
+        _session: &SyncBatchSession,
+    ) -> Result<SyncSessionChoice> {
+        self.sync_session_choice
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| eyre!("unexpected choose_sync_session_action call"))
+    }
+
+    fn review_sync_batch(
+        &self,
+        _workspace_root: &Path,
+        session: &SyncBatchSession,
+    ) -> Result<Option<usize>> {
+        let mut selections = self.sync_batch_review_selection.lock().unwrap();
+        if selections.is_empty() {
+            return Ok(session.items.iter().position(|item| {
+                item.status == aclog::domain::sync_batch::SyncItemStatus::Pending
+            }));
+        }
+        Ok(selections.remove(0))
+    }
+
+    fn select_sync_batch_action(
+        &self,
+        item: &SyncSessionItem,
+        _metadata: Option<&ProblemMetadata>,
+        _submissions: &[SubmissionRecord],
+    ) -> Result<SyncSelection> {
+        if matches!(
+            item.kind,
+            aclog::domain::sync_batch::SyncChangeKind::Deleted
+        ) {
+            return self
+                .delete_confirmation
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| eyre!("unexpected select_sync_batch_action delete call"));
+        }
+        self.submission_selection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| eyre!("unexpected select_sync_batch_action call"))
+    }
+
     fn select_submission(
         &self,
         _problem_id: &str,
@@ -306,6 +363,29 @@ impl UserInterface for FakeUi {
             .ok_or_else(|| eyre!("unexpected confirm_deleted_file call"))
     }
 
+    fn open_record_browser(
+        &self,
+        _workspace_root: &Path,
+        query: &BrowserQuery,
+        _index: &RecordIndex,
+    ) -> Result<()> {
+        self.opened_browsers.lock().unwrap().push(query.clone());
+        Ok(())
+    }
+
+    fn show_stats_dashboard(
+        &self,
+        _workspace_root: &Path,
+        dashboard: &StatsDashboard,
+        _index: &RecordIndex,
+    ) -> Result<()> {
+        self.shown_dashboards
+            .lock()
+            .unwrap()
+            .push(dashboard.clone());
+        Ok(())
+    }
+
     fn show_stats(&self, _workspace_root: &Path, summary: &StatsSummary) -> Result<()> {
         self.shown_stats.lock().unwrap().push(summary.clone());
         Ok(())
@@ -327,6 +407,11 @@ pub fn workspace_with_config() -> TempDir {
 pub async fn init_real_workspace() -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     aclog::config::init_workspace(dir.path()).await.unwrap();
+    fs::write(
+        dir.path().join(".aclog/config.toml"),
+        "[user]\nluogu_uid = \"123\"\nluogu_cookie = \"cookie\"\n\n[settings]\nmetadata_ttl_days = 7\nproblem_metadata_ttl_days = 7\nluogu_mappings_ttl_days = 7\nluogu_tags_ttl_days = 7\n",
+    )
+    .unwrap();
     dir
 }
 
@@ -358,6 +443,7 @@ pub fn sample_metadata(problem_id: &str) -> ProblemMetadata {
 pub fn sample_submission(submission_id: u64, verdict: &str) -> SubmissionRecord {
     SubmissionRecord {
         submission_id,
+        problem_id: None,
         submitter: "tester".to_string(),
         verdict: verdict.to_string(),
         score: Some(100),
@@ -386,8 +472,12 @@ pub fn sample_history_record(
             problem_id: problem_id.to_string(),
             title: format!("{problem_id} title"),
             verdict: verdict.to_string(),
+            score: Some(100),
+            time_ms: Some(12),
+            memory_mb: Some(1.5),
             difficulty: "入门".to_string(),
             tags: vec!["模拟".to_string()],
+            source: "Luogu".to_string(),
             submission_id,
             submission_time: Some(
                 FixedOffset::east_opt(8 * 3600)
@@ -397,6 +487,7 @@ pub fn sample_history_record(
                     .unwrap(),
             ),
             file_name: file_name.to_string(),
+            training: TrainingFields::default(),
             source_order: 0,
         },
     }

@@ -66,6 +66,11 @@ pub fn parse_submission_record(
 
     Ok(SubmissionRecord {
         submission_id,
+        problem_id: value
+            .get("problem")
+            .and_then(|item| item.get("pid"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         submitter,
         verdict,
         score,

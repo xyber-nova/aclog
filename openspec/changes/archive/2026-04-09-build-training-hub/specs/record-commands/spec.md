@@ -1,21 +1,4 @@
-## Purpose
-
-为当前工作区提供按解法文件组织的记录管理能力，支持补录、重绑和列表查看，并保持命令语义与 TUI 交互边界清晰。
-
-## Requirements
-
-### Requirement: record bind MUST 为被跟踪的解法文件创建标准 solve 记录
-系统 MUST 提供 `aclog record bind <file>`，以具体解法文件为对象，为该文件创建一条标准 `solve(...)` 记录。
-
-#### Scenario: 为被跟踪文件补录 submission
-- **WHEN** 用户执行 `aclog record bind <file>`，且该文件存在、被当前 `jj` 工作区跟踪、并且文件名可提取题号
-- **THEN** 系统必须为该文件拉取同题题目元数据和 submission 列表
-- **AND** 系统必须在选定一条 submission 后创建标准 `solve(...)` commit
-
-#### Scenario: bind 遇到未被跟踪的文件
-- **WHEN** 用户执行 `aclog record bind <file>`，且该文件未被当前 `jj` 工作区跟踪
-- **THEN** 系统必须拒绝执行该命令
-- **AND** 系统不得为该文件创建任何 commit
+## MODIFIED Requirements
 
 ### Requirement: record rebind MUST 重写用户选中的同文件 solve 记录
 系统 MUST 提供 `aclog record rebind <file>`，并通过 `jj` rewrite 修正该文件既有 `solve(...)` 记录绑定到哪条 submission。重绑时系统必须保留该记录既有的训练字段，只更新 submission 相关信息和由题目 metadata 派生的字段。
@@ -63,38 +46,7 @@
 - **THEN** 系统必须输出与文本模式等价的数据集合
 - **AND** 系统不得因为输出格式不同而改变记录选择口径
 
-### Requirement: record 的选择步骤 MUST 可由非交互 CLI 完全表达
-系统 MUST NOT 把 `record` 的关键选择能力做成交互界面独占行为；所有选择步骤 MUST 有等价的非交互 CLI 输入方式。
-
-#### Scenario: bind 通过 CLI 直接指定 submission
-- **WHEN** 用户执行 `aclog record bind <file> --submission-id <id>`
-- **THEN** 系统必须直接使用该 submission 完成绑定
-- **AND** 系统不得再要求用户进入 submission 选择 TUI
-
-#### Scenario: bind 指定的 submission 不属于同题
-- **WHEN** 用户执行 `aclog record bind <file> --submission-id <id>`，且该 submission 不属于目标文件解析出的题号
-- **THEN** 系统必须拒绝执行该命令
-- **AND** 系统不得回退到 submission 选择 TUI
-
-#### Scenario: rebind 通过 CLI 完成全部选择
-- **WHEN** 用户执行 `aclog record rebind <file> --record-rev <revset> --submission-id <id>`
-- **THEN** 系统必须直接重写由 `--record-rev` 指定的那条历史记录，并将其改绑到指定 submission
-- **AND** 系统不得再要求用户进入任何 TUI 选择步骤
-
-#### Scenario: rebind 指定的旧记录不匹配目标文件
-- **WHEN** 用户执行 `aclog record rebind <file> --record-rev <revset>`，且该 revset 没有唯一解析到一条匹配目标文件的标准 `solve(...)` 记录
-- **THEN** 系统必须拒绝执行该命令
-- **AND** 系统不得回退到旧记录选择 TUI
-
-#### Scenario: CLI 只补齐部分选择
-- **WHEN** 用户执行 `record rebind` 或 `record bind`，并且 CLI 参数只补齐了一部分选择
-- **THEN** 系统必须只为剩余未决选择进入 TUI
-- **AND** 已由 CLI 明确指定的选择不得要求用户再次确认
-
-#### Scenario: record list 始终使用 CLI 输出
-- **WHEN** 用户执行 `aclog record list`
-- **THEN** 系统必须直接以 CLI 文本形式输出记录结果
-- **AND** 系统不得进入 TUI 界面
+## ADDED Requirements
 
 ### Requirement: record MUST 提供记录详情查看命令
 系统 MUST 提供针对具体解法文件的记录详情查看命令，用于展示最新记录或指定历史记录的完整字段详情。

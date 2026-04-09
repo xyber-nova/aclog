@@ -41,6 +41,7 @@ pub struct AclogPaths {
     pub problems_dir: PathBuf,
     pub luogu_mappings_file: PathBuf,
     pub luogu_tags_file: PathBuf,
+    pub sync_session_file: PathBuf,
 }
 
 fn default_metadata_ttl_days() -> i64 {
@@ -88,12 +89,14 @@ impl AclogPaths {
         let problems_dir = aclog_dir.join("problems");
         let luogu_mappings_file = aclog_dir.join("luogu-mappings.toml");
         let luogu_tags_file = aclog_dir.join("luogu-tags.toml");
+        let sync_session_file = aclog_dir.join("sync-session.toml");
         Ok(Self {
             workspace_root,
             config_file,
             problems_dir,
             luogu_mappings_file,
             luogu_tags_file,
+            sync_session_file,
         })
     }
 }

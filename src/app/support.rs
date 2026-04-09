@@ -8,8 +8,10 @@ use crate::{
     domain::{
         problem::ProblemMetadata,
         record::FileRecordSummary,
-        record::{HistoricalSolveRecord, SyncSelection},
+        record::{HistoricalSolveRecord, SolveRecord, SyncSelection},
+        record_index::RecordIndex,
         submission::SubmissionRecord,
+        training_fields::normalize_optional_training_text,
     },
     ui::interaction::UserInterface,
 };
@@ -26,6 +28,26 @@ pub(crate) struct SolutionFileTarget {
 pub(crate) struct RebindSelectionPlan {
     pub(crate) needs_record_choice: bool,
     pub(crate) needs_submission_choice: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordListQuery {
+    pub problem_id: Option<String>,
+    pub file_name: Option<String>,
+    pub verdict: Option<String>,
+    pub difficulty: Option<String>,
+    pub tag: Option<String>,
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrainingFieldsPatch {
+    pub note: Option<String>,
+    pub mistakes: Option<String>,
+    pub insight: Option<String>,
+    pub confidence: Option<String>,
+    pub source_kind: Option<String>,
+    pub time_spent: Option<String>,
 }
 
 pub(crate) async fn resolve_solution_file_target(
@@ -98,6 +120,17 @@ pub(crate) fn history_records_for_file(
         .collect()
 }
 
+pub(crate) async fn load_record_index(
+    paths: &AclogPaths,
+    repo: &impl RepoGateway,
+) -> Result<RecordIndex> {
+    let history_entries = repo
+        .collect_commit_descriptions(&paths.workspace_root)
+        .await?;
+    let history_records = crate::commit_format::parse_historical_solve_records(&history_entries);
+    Ok(RecordIndex::build(&history_records))
+}
+
 pub(crate) fn select_submission_for_record(
     problem_id: &str,
     metadata: Option<&ProblemMetadata>,
@@ -159,6 +192,50 @@ pub(crate) async fn select_record_for_rebind(
         .ok_or_else(|| eyre!("已取消选择要重写的记录"))
 }
 
+pub(crate) async fn resolve_record_for_file(
+    paths: &AclogPaths,
+    target: &SolutionFileTarget,
+    record_rev: Option<&str>,
+    repo: &impl RepoGateway,
+) -> Result<HistoricalSolveRecord> {
+    let index = load_record_index(paths, repo).await?;
+    if let Some(record_rev) = record_rev {
+        let revision = repo
+            .resolve_single_commit_id(&paths.workspace_root, record_rev)
+            .await?;
+        let record = index
+            .all_records()
+            .iter()
+            .find(|entry| entry.revision == revision)
+            .cloned()
+            .ok_or_else(|| eyre!("`--record-rev` 指定的提交不存在"))?;
+        if record.record.file_name != target.repo_relative_path {
+            return Err(eyre!(
+                "`--record-rev` 指定的提交不是该文件 {} 的标准 solve 记录",
+                target.repo_relative_path
+            ));
+        }
+        if record.record.problem_id != target.problem_id {
+            return Err(eyre!(
+                "`--record-rev` 指定的提交题号与文件 {} 不匹配",
+                target.repo_relative_path
+            ));
+        }
+        return Ok(record);
+    }
+
+    index
+        .timeline_for_file(&target.repo_relative_path)
+        .first()
+        .cloned()
+        .ok_or_else(|| {
+            eyre!(
+                "文件 {} 当前没有已记录的 solve 记录",
+                target.repo_relative_path
+            )
+        })
+}
+
 pub(crate) fn planned_commit(
     problem_id: &str,
     file: &str,
@@ -174,17 +251,36 @@ pub(crate) fn planned_commit(
     }
 }
 
-pub(crate) fn selection_kind(selection: &SyncSelection) -> &'static str {
-    match selection {
-        SyncSelection::Submission(_) => "submission",
-        SyncSelection::Chore => "chore",
-        SyncSelection::Delete => "delete",
-        SyncSelection::Skip => "skip",
-    }
-}
-
-pub(crate) fn should_fetch_submissions(change_kind: crate::vcs::ProblemFileChangeKind) -> bool {
-    matches!(change_kind, crate::vcs::ProblemFileChangeKind::Active)
+pub(crate) fn filter_record_summaries(
+    records: &[FileRecordSummary],
+    query: &RecordListQuery,
+) -> Vec<FileRecordSummary> {
+    records
+        .iter()
+        .filter(|record| {
+            query
+                .problem_id
+                .as_deref()
+                .is_none_or(|pid| record.problem_id.eq_ignore_ascii_case(pid))
+                && query
+                    .file_name
+                    .as_deref()
+                    .is_none_or(|file_name| record.file_name.contains(file_name))
+                && query
+                    .verdict
+                    .as_deref()
+                    .is_none_or(|verdict| record.verdict.eq_ignore_ascii_case(verdict))
+                && query
+                    .difficulty
+                    .as_deref()
+                    .is_none_or(|difficulty| record.difficulty == difficulty)
+                && query
+                    .tag
+                    .as_deref()
+                    .is_none_or(|tag| record.tags.iter().any(|item| item == tag))
+        })
+        .cloned()
+        .collect()
 }
 
 pub(crate) fn render_record_list(records: &[FileRecordSummary]) -> String {
@@ -192,7 +288,7 @@ pub(crate) fn render_record_list(records: &[FileRecordSummary]) -> String {
         return "当前工作区还没有已记录的解法文件\n".to_string();
     }
 
-    let mut lines = vec!["FILE\tPID\tVERDICT\tDIFF\tSUBMISSION\tRECORDED-AT\tTITLE".to_string()];
+    let mut lines = vec!["文件\t题号\t结果\t难度\t提交编号\t记录时间\t标题".to_string()];
     for record in records {
         let submission_id = record
             .submission_id
@@ -216,9 +312,115 @@ pub(crate) fn render_record_list(records: &[FileRecordSummary]) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
+pub(crate) fn render_record_list_json(records: &[FileRecordSummary]) -> Result<String> {
+    Ok(format!("{}\n", serde_json::to_string_pretty(records)?))
+}
+
+pub(crate) fn render_record_detail(record: &HistoricalSolveRecord) -> String {
+    let solve = &record.record;
+    let submission_id = solve
+        .submission_id
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let recorded_at = solve
+        .submission_time
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|| "-".to_string());
+    let tags = if solve.tags.is_empty() {
+        "-".to_string()
+    } else {
+        solve.tags.join(", ")
+    };
+    let score = solve
+        .score
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let time_ms = solve
+        .time_ms
+        .map(|value| format!("{value}ms"))
+        .unwrap_or_else(|| "-".to_string());
+    let memory_mb = solve
+        .memory_mb
+        .map(|value| format!("{value:.1}MB"))
+        .unwrap_or_else(|| "-".to_string());
+
+    [
+        format!("版本: {}", record.revision),
+        format!("题号: {}", solve.problem_id),
+        format!("标题: {}", solve.title),
+        format!("文件: {}", solve.file_name),
+        format!("结果: {}", solve.verdict),
+        format!("分数: {score}"),
+        format!("耗时: {time_ms}"),
+        format!("内存: {memory_mb}"),
+        format!("难度: {}", solve.difficulty),
+        format!("来源: {}", solve.source),
+        format!("提交编号: {submission_id}"),
+        format!("提交时间: {recorded_at}"),
+        format!("标签: {tags}"),
+        format!("笔记: {}", solve.training.note.as_deref().unwrap_or("-")),
+        format!(
+            "卡点: {}",
+            solve.training.mistakes.as_deref().unwrap_or("-")
+        ),
+        format!("收获: {}", solve.training.insight.as_deref().unwrap_or("-")),
+        format!(
+            "熟练度: {}",
+            solve.training.confidence.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "完成方式: {}",
+            solve.training.source_kind.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "训练耗时: {}",
+            solve.training.time_spent.as_deref().unwrap_or("-")
+        ),
+    ]
+    .join("\n")
+        + "\n"
+}
+
+pub(crate) fn render_record_detail_json(record: &HistoricalSolveRecord) -> Result<String> {
+    Ok(format!("{}\n", serde_json::to_string_pretty(record)?))
+}
+
+pub(crate) fn apply_training_patch(
+    record: &HistoricalSolveRecord,
+    patch: &TrainingFieldsPatch,
+) -> Result<SolveRecord> {
+    if patch == &TrainingFieldsPatch::default() {
+        return Err(eyre!("至少需要提供一个训练字段参数"));
+    }
+
+    let mut updated = record.record.clone();
+    update_training_field(&mut updated.training.note, patch.note.as_deref());
+    update_training_field(&mut updated.training.mistakes, patch.mistakes.as_deref());
+    update_training_field(&mut updated.training.insight, patch.insight.as_deref());
+    update_training_field(
+        &mut updated.training.confidence,
+        patch.confidence.as_deref(),
+    );
+    update_training_field(
+        &mut updated.training.source_kind,
+        patch.source_kind.as_deref(),
+    );
+    update_training_field(
+        &mut updated.training.time_spent,
+        patch.time_spent.as_deref(),
+    );
+    Ok(updated)
+}
+
+fn update_training_field(slot: &mut Option<String>, input: Option<&str>) {
+    if let Some(input) = input {
+        *slot = normalize_optional_training_text(Some(input));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::domain::record::{HistoricalSolveRecord, SolveRecord};
+    use crate::domain::record::{HistoricalSolveRecord, SolveRecord, TrainingFields};
 
     use super::history_records_for_file;
 
@@ -231,11 +433,16 @@ mod tests {
                     problem_id: "P1001".to_string(),
                     title: "A".to_string(),
                     verdict: "AC".to_string(),
+                    score: None,
+                    time_ms: None,
+                    memory_mb: None,
                     difficulty: "入门".to_string(),
                     tags: vec![],
+                    source: "Luogu".to_string(),
                     submission_id: Some(1),
                     submission_time: None,
                     file_name: "P1001.cpp".to_string(),
+                    training: TrainingFields::default(),
                     source_order: 0,
                 },
             },
@@ -245,11 +452,16 @@ mod tests {
                     problem_id: "P1001".to_string(),
                     title: "A".to_string(),
                     verdict: "WA".to_string(),
+                    score: None,
+                    time_ms: None,
+                    memory_mb: None,
                     difficulty: "入门".to_string(),
                     tags: vec![],
+                    source: "Luogu".to_string(),
                     submission_id: Some(2),
                     submission_time: None,
                     file_name: "nested/P1001.cpp".to_string(),
+                    training: TrainingFields::default(),
                     source_order: 1,
                 },
             },

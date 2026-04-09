@@ -3,13 +3,35 @@ use std::path::Path;
 use color_eyre::Result;
 
 use crate::domain::{
+    browser::BrowserQuery,
     problem::ProblemMetadata,
     record::{HistoricalSolveRecord, SyncSelection},
-    stats::StatsSummary,
+    record_index::RecordIndex,
+    stats::{StatsDashboard, StatsSummary},
     submission::SubmissionRecord,
+    sync_batch::{SyncBatchSession, SyncSessionChoice, SyncSessionItem},
 };
 
 pub trait UserInterface {
+    fn choose_sync_session_action(
+        &self,
+        workspace_root: &Path,
+        session: &SyncBatchSession,
+    ) -> Result<SyncSessionChoice>;
+
+    fn review_sync_batch(
+        &self,
+        workspace_root: &Path,
+        session: &SyncBatchSession,
+    ) -> Result<Option<usize>>;
+
+    fn select_sync_batch_action(
+        &self,
+        item: &SyncSessionItem,
+        metadata: Option<&ProblemMetadata>,
+        submissions: &[SubmissionRecord],
+    ) -> Result<SyncSelection>;
+
     fn select_submission(
         &self,
         problem_id: &str,
@@ -37,6 +59,20 @@ pub trait UserInterface {
         metadata: Option<&ProblemMetadata>,
     ) -> Result<SyncSelection>;
 
+    fn open_record_browser(
+        &self,
+        workspace_root: &Path,
+        query: &BrowserQuery,
+        index: &RecordIndex,
+    ) -> Result<()>;
+
+    fn show_stats_dashboard(
+        &self,
+        workspace_root: &Path,
+        dashboard: &StatsDashboard,
+        index: &RecordIndex,
+    ) -> Result<()>;
+
     fn show_stats(&self, workspace_root: &Path, summary: &StatsSummary) -> Result<()>;
 }
 
@@ -44,6 +80,31 @@ pub trait UserInterface {
 pub struct TerminalUi;
 
 impl UserInterface for TerminalUi {
+    fn choose_sync_session_action(
+        &self,
+        workspace_root: &Path,
+        session: &SyncBatchSession,
+    ) -> Result<SyncSessionChoice> {
+        crate::tui::choose_sync_session_action(workspace_root, session)
+    }
+
+    fn review_sync_batch(
+        &self,
+        workspace_root: &Path,
+        session: &SyncBatchSession,
+    ) -> Result<Option<usize>> {
+        crate::tui::review_sync_batch(workspace_root, session)
+    }
+
+    fn select_sync_batch_action(
+        &self,
+        item: &SyncSessionItem,
+        metadata: Option<&ProblemMetadata>,
+        submissions: &[SubmissionRecord],
+    ) -> Result<SyncSelection> {
+        crate::tui::select_sync_batch_action(item, metadata, submissions)
+    }
+
     fn select_submission(
         &self,
         problem_id: &str,
@@ -77,6 +138,24 @@ impl UserInterface for TerminalUi {
         metadata: Option<&ProblemMetadata>,
     ) -> Result<SyncSelection> {
         crate::tui::confirm_deleted_file(problem_id, metadata)
+    }
+
+    fn open_record_browser(
+        &self,
+        workspace_root: &Path,
+        query: &BrowserQuery,
+        index: &RecordIndex,
+    ) -> Result<()> {
+        crate::tui::open_record_browser(workspace_root, query, index)
+    }
+
+    fn show_stats_dashboard(
+        &self,
+        workspace_root: &Path,
+        dashboard: &StatsDashboard,
+        index: &RecordIndex,
+    ) -> Result<()> {
+        crate::tui::show_stats_dashboard(workspace_root, dashboard, index)
     }
 
     fn show_stats(&self, workspace_root: &Path, summary: &StatsSummary) -> Result<()> {

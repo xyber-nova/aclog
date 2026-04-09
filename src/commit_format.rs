@@ -5,8 +5,9 @@ use regex::Regex;
 
 use crate::domain::{
     problem::ProblemMetadata,
-    record::{HistoricalSolveRecord, SolveRecord, SyncSelection},
+    record::{HistoricalSolveRecord, SolveRecord, SyncSelection, TrainingFields},
     submission::SubmissionRecord,
+    training_fields::format_training_fields,
 };
 
 pub fn build_commit_message(
@@ -31,6 +32,22 @@ pub fn build_solve_commit_message(
     metadata: Option<&ProblemMetadata>,
     record: &SubmissionRecord,
 ) -> String {
+    build_solve_commit_message_with_training(
+        problem_id,
+        file_name,
+        metadata,
+        record,
+        &TrainingFields::default(),
+    )
+}
+
+pub fn build_solve_commit_message_with_training(
+    problem_id: &str,
+    file_name: &str,
+    metadata: Option<&ProblemMetadata>,
+    record: &SubmissionRecord,
+    training: &TrainingFields,
+) -> String {
     let title = metadata
         .map(|item| item.title.as_str())
         .filter(|title| !title.is_empty())
@@ -50,28 +67,100 @@ pub fn build_solve_commit_message(
         .map(|value| value.to_rfc3339())
         .unwrap_or_else(|| "-".to_string());
 
-    format!(
-        "solve({problem_id}): {title}\n\nVerdict: {}\nScore: {}\nTime: {}\nMemory: {}\nSubmission-ID: {}\nSubmission-Time: {}\nTags: {}\nDifficulty: {}\nSource: {}\nFile: {}",
-        record.verdict,
-        record
-            .score
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-        record
-            .time_ms
-            .map(|value| format!("{value}ms"))
-            .unwrap_or_else(|| "-".to_string()),
-        record
-            .memory_mb
-            .map(|value| format!("{value:.1}MB"))
-            .unwrap_or_else(|| "-".to_string()),
-        record.submission_id,
-        submitted_at,
-        tags,
-        difficulty,
-        source,
-        file_name,
-    )
+    let mut lines = vec![
+        format!("solve({problem_id}): {title}"),
+        String::new(),
+        format!("Verdict: {}", record.verdict),
+        format!(
+            "Score: {}",
+            record
+                .score
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "Time: {}",
+            record
+                .time_ms
+                .map(|value| format!("{value}ms"))
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "Memory: {}",
+            record
+                .memory_mb
+                .map(|value| format!("{value:.1}MB"))
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!("Submission-ID: {}", record.submission_id),
+        format!("Submission-Time: {submitted_at}"),
+        format!("Tags: {tags}"),
+        format!("Difficulty: {difficulty}"),
+        format!("Source: {source}"),
+        format!("File: {file_name}"),
+    ];
+    for (key, value) in format_training_fields(training) {
+        lines.push(format!("{key}: {value}"));
+    }
+    lines.join("\n")
+}
+
+pub fn build_solve_record_message(record: &SolveRecord) -> String {
+    let mut lines = vec![
+        format!("solve({}): {}", record.problem_id, record.title),
+        String::new(),
+        format!("Verdict: {}", record.verdict),
+        format!(
+            "Score: {}",
+            record
+                .score
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "Time: {}",
+            record
+                .time_ms
+                .map(|value| format!("{value}ms"))
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "Memory: {}",
+            record
+                .memory_mb
+                .map(|value| format!("{value:.1}MB"))
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "Submission-ID: {}",
+            record
+                .submission_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "Submission-Time: {}",
+            record
+                .submission_time
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "Tags: {}",
+            if record.tags.is_empty() {
+                "-".to_string()
+            } else {
+                record.tags.join(", ")
+            }
+        ),
+        format!("Difficulty: {}", record.difficulty),
+        format!("Source: {}", record.source),
+        format!("File: {}", record.file_name),
+    ];
+    for (key, value) in format_training_fields(&record.training) {
+        lines.push(format!("{key}: {value}"));
+    }
+    lines.join("\n")
 }
 
 pub fn parse_solve_records(messages: &[String]) -> Vec<SolveRecord> {
@@ -114,14 +203,18 @@ pub fn parse_solve_commit_message(message: &str, source_order: usize) -> Option<
     Some(SolveRecord {
         problem_id,
         title: normalize_title_field(captures.name("title").map(|value| value.as_str())),
-        verdict: normalize_stat_field(fields.get("Verdict").map(String::as_str)),
-        difficulty: normalize_stat_field(fields.get("Difficulty").map(String::as_str)),
-        tags: parse_tags(fields.get("Tags").map(String::as_str)),
-        submission_id: parse_submission_id(fields.get("Submission-ID").map(String::as_str)),
-        submission_time: fields
-            .get("Submission-Time")
+        verdict: normalize_stat_field(field_value(&fields, &["判题结果", "Verdict"])),
+        score: parse_score(field_value(&fields, &["分数", "Score"])),
+        time_ms: parse_time_ms(field_value(&fields, &["耗时", "Time"])),
+        memory_mb: parse_memory_mb(field_value(&fields, &["内存", "Memory"])),
+        difficulty: normalize_stat_field(field_value(&fields, &["难度", "Difficulty"])),
+        tags: parse_tags(field_value(&fields, &["标签", "Tags"])),
+        source: normalize_stat_field(field_value(&fields, &["来源", "Source"])),
+        submission_id: parse_submission_id(field_value(&fields, &["提交编号", "Submission-ID"])),
+        submission_time: field_value(&fields, &["提交时间", "Submission-Time"])
             .and_then(|value| DateTime::parse_from_rfc3339(value).ok()),
-        file_name: normalize_stat_field(fields.get("File").map(String::as_str)),
+        file_name: normalize_stat_field(field_value(&fields, &["文件", "File"])),
+        training: crate::domain::training_fields::parse_training_fields(&fields),
         source_order,
     })
 }
@@ -168,6 +261,12 @@ fn normalize_title_field(value: Option<&str>) -> String {
         .to_string()
 }
 
+fn field_value<'a>(fields: &'a HashMap<String, String>, aliases: &[&str]) -> Option<&'a str> {
+    aliases
+        .iter()
+        .find_map(|alias| fields.get(*alias).map(String::as_str))
+}
+
 fn parse_tags(value: Option<&str>) -> Vec<String> {
     value
         .map(str::trim)
@@ -187,17 +286,53 @@ fn parse_submission_id(value: Option<&str>) -> Option<u64> {
     value.and_then(|item| item.trim().parse::<u64>().ok())
 }
 
+fn parse_score(value: Option<&str>) -> Option<i64> {
+    value.and_then(|item| {
+        let trimmed = item.trim();
+        if trimmed.is_empty() || trimmed == "-" {
+            None
+        } else {
+            trimmed.parse::<i64>().ok()
+        }
+    })
+}
+
+fn parse_time_ms(value: Option<&str>) -> Option<u64> {
+    value.and_then(|item| {
+        let trimmed = item.trim();
+        let trimmed = trimmed.strip_suffix("ms").unwrap_or(trimmed);
+        if trimmed.is_empty() || trimmed == "-" {
+            None
+        } else {
+            trimmed.parse::<u64>().ok()
+        }
+    })
+}
+
+fn parse_memory_mb(value: Option<&str>) -> Option<f64> {
+    value.and_then(|item| {
+        let trimmed = item.trim();
+        let trimmed = trimmed.strip_suffix("MB").unwrap_or(trimmed);
+        if trimmed.is_empty() || trimmed == "-" {
+            None
+        } else {
+            trimmed.parse::<f64>().ok()
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{FixedOffset, TimeZone};
 
     use super::{
-        build_commit_message, build_solve_commit_message, parse_historical_solve_records,
-        parse_solve_commit_message, parse_solve_records,
+        build_commit_message, build_solve_commit_message, build_solve_commit_message_with_training,
+        build_solve_record_message, parse_historical_solve_records, parse_solve_commit_message,
+        parse_solve_records,
     };
     use crate::domain::{
         problem::ProblemMetadata,
-        record::{HistoricalSolveRecord, SolveRecord, SyncSelection},
+        record::{HistoricalSolveRecord, SolveRecord, SyncSelection, TrainingFields},
         submission::SubmissionRecord,
     };
 
@@ -220,6 +355,7 @@ mod tests {
     fn sample_record() -> SubmissionRecord {
         SubmissionRecord {
             submission_id: 123456,
+            problem_id: Some("P1001".to_string()),
             submitter: "123456".to_string(),
             verdict: "AC".to_string(),
             score: Some(100),
@@ -285,10 +421,69 @@ mod tests {
         assert_eq!(record.problem_id, "P1001");
         assert_eq!(record.title, "A+B Problem");
         assert_eq!(record.verdict, "AC");
+        assert_eq!(record.score, Some(100));
+        assert_eq!(record.time_ms, Some(50));
+        assert_eq!(record.memory_mb, Some(1.2));
         assert_eq!(record.difficulty, "入门");
         assert_eq!(record.tags, vec!["模拟".to_string(), "入门".to_string()]);
+        assert_eq!(record.source, "Luogu");
         assert_eq!(record.submission_id, Some(123456));
         assert_eq!(record.file_name, "P1001.cpp");
+    }
+
+    #[test]
+    fn solve_commit_message_round_trips_training_fields() {
+        let metadata = sample_metadata();
+        let record = sample_record();
+        let training = TrainingFields {
+            note: Some("先枚举后贪心".to_string()),
+            confidence: Some("medium".to_string()),
+            ..TrainingFields::default()
+        };
+
+        let message = build_solve_commit_message_with_training(
+            "P1001",
+            "P1001.cpp",
+            Some(&metadata),
+            &record,
+            &training,
+        );
+        let parsed = parse_solve_commit_message(&message, 0).unwrap();
+
+        assert_eq!(parsed.training, training);
+    }
+
+    #[test]
+    fn build_solve_record_message_preserves_existing_record_data() {
+        let record = SolveRecord {
+            problem_id: "P1001".to_string(),
+            title: "A+B Problem".to_string(),
+            verdict: "AC".to_string(),
+            score: Some(100),
+            time_ms: Some(50),
+            memory_mb: Some(1.2),
+            difficulty: "入门".to_string(),
+            tags: vec!["模拟".to_string()],
+            source: "Luogu".to_string(),
+            submission_id: Some(123456),
+            submission_time: Some(
+                FixedOffset::east_opt(8 * 3600)
+                    .unwrap()
+                    .with_ymd_and_hms(2024, 1, 15, 14, 32, 0)
+                    .single()
+                    .unwrap(),
+            ),
+            file_name: "P1001.cpp".to_string(),
+            training: TrainingFields {
+                note: Some("复习".to_string()),
+                ..TrainingFields::default()
+            },
+            source_order: 0,
+        };
+
+        let message = build_solve_record_message(&record);
+        assert!(message.contains("Score: 100"));
+        assert!(message.contains("Note: 复习"));
     }
 
     #[test]
@@ -314,11 +509,16 @@ mod tests {
                     problem_id: "P1001".to_string(),
                     title: "A+B Problem".to_string(),
                     verdict: "-".to_string(),
+                    score: None,
+                    time_ms: None,
+                    memory_mb: None,
                     difficulty: "-".to_string(),
                     tags: Vec::new(),
+                    source: "-".to_string(),
                     submission_id: Some(42),
                     submission_time: None,
                     file_name: "P1001.cpp".to_string(),
+                    training: TrainingFields::default(),
                     source_order: 0,
                 },
             }]

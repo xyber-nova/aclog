@@ -1,8 +1,4 @@
-## Purpose
-
-为 `sync` 提供显式、可恢复、可预览并带防错提示的交互式记录流程，确保工作区变更在生成 commit 前都经过用户确认。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: sync 必须为每个变更题目文件要求显式选择
 当 `aclog sync` 检测到题目文件发生变更时，系统 MUST 先建立当前批次的待处理清单，并在生成 commit 之前为每个文件保留显式选择步骤。系统可以提供默认候选或批量预览，但默认候选不得等价于已确认选择。

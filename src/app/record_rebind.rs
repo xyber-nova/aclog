@@ -60,11 +60,12 @@ pub async fn run(
         ui,
     )?;
     debug!(?selection_plan, "record rebind 交互计划已确定");
-    let message = crate::commit_format::build_solve_commit_message(
+    let message = crate::commit_format::build_solve_commit_message_with_training(
         &target.problem_id,
         &target.repo_relative_path,
         metadata.as_ref(),
         &record,
+        &selected_record.record.training,
     );
     deps.rewrite_commit_description(&paths.workspace_root, &selected_record.revision, &message)
         .await?;

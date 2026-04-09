@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmissionRecord {
     pub submission_id: u64,
+    pub problem_id: Option<String>,
     pub submitter: String,
     pub verdict: String,
     pub score: Option<i64>,

@@ -1,6 +1,6 @@
 mod support;
 
-use aclog::app::run_record_rebind_with;
+use aclog::{app::run_record_rebind_with, domain::record::TrainingFields};
 
 use support::{
     FakeDeps, FakeUi, sample_history_record, sample_metadata, sample_submission,
@@ -108,4 +108,46 @@ async fn record_rebind_rejects_revision_outside_candidate_set() {
     .unwrap_err();
 
     assert!(error.to_string().contains("当前没有可重绑的记录"));
+}
+
+#[tokio::test]
+async fn record_rebind_preserves_existing_training_fields() {
+    let workspace = workspace_with_config();
+    write_workspace_file(workspace.path(), "P1004.cpp", "int main() {}");
+
+    let deps = FakeDeps::default();
+    deps.track_file("P1004.cpp");
+    deps.set_commit_descriptions(vec![(
+        "real-rev".to_string(),
+        "solve(P1004): title\n\nVerdict: WA\nSubmission-ID: 1\nFile: P1004.cpp\nNote: 先补图论\nConfidence: low".to_string(),
+    )]);
+    deps.resolve_revset_as("abc123", "real-rev");
+    deps.insert_metadata("P1004", Some(sample_metadata("P1004")));
+    deps.insert_submissions("P1004", vec![sample_submission(3, "AC")]);
+    let ui = FakeUi::default();
+
+    run_record_rebind_with(
+        workspace.path().to_path_buf(),
+        workspace.path().join("P1004.cpp"),
+        Some("abc123".to_string()),
+        Some(3),
+        &deps,
+        &ui,
+    )
+    .await
+    .unwrap();
+
+    let rewritten = deps.rewritten_descriptions();
+    assert_eq!(rewritten.len(), 1);
+    assert!(rewritten[0].1.contains("Note: 先补图论"));
+    assert!(rewritten[0].1.contains("Confidence: low"));
+    let parsed = aclog::commit_format::parse_solve_commit_message(&rewritten[0].1, 0).unwrap();
+    assert_eq!(
+        parsed.training,
+        TrainingFields {
+            note: Some("先补图论".to_string()),
+            confidence: Some("low".to_string()),
+            ..TrainingFields::default()
+        }
+    );
 }

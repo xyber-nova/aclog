@@ -19,7 +19,9 @@ use ratatui::{
 };
 
 use crate::models::{
-    HistoricalSolveRecord, ProblemMetadata, StatsSummary, SubmissionRecord, SyncSelection,
+    BrowserQuery, BrowserRootView, HistoricalSolveRecord, ProblemMetadata, RecordIndex,
+    StatsDashboard, StatsSummary, SubmissionRecord, SyncBatchSession, SyncChangeKind,
+    SyncSelection, SyncSessionChoice, SyncSessionItem,
 };
 
 pub fn select_submission(
@@ -76,6 +78,44 @@ pub fn confirm_deleted_file(
 
 pub fn show_stats(workspace_root: &Path, summary: &StatsSummary) -> Result<()> {
     run_in_terminal(|terminal| run_stats_app(terminal, workspace_root, summary))
+}
+
+pub fn choose_sync_session_action(
+    workspace_root: &Path,
+    session: &SyncBatchSession,
+) -> Result<SyncSessionChoice> {
+    run_in_terminal(|terminal| run_sync_session_choice_app(terminal, workspace_root, session))
+}
+
+pub fn review_sync_batch(
+    workspace_root: &Path,
+    session: &SyncBatchSession,
+) -> Result<Option<usize>> {
+    run_in_terminal(|terminal| run_sync_batch_review_app(terminal, workspace_root, session))
+}
+
+pub fn select_sync_batch_action(
+    item: &SyncSessionItem,
+    metadata: Option<&ProblemMetadata>,
+    submissions: &[SubmissionRecord],
+) -> Result<SyncSelection> {
+    run_in_terminal(|terminal| run_sync_item_app(terminal, item, metadata, submissions))
+}
+
+pub fn open_record_browser(
+    workspace_root: &Path,
+    query: &BrowserQuery,
+    index: &RecordIndex,
+) -> Result<()> {
+    run_in_terminal(|terminal| run_browser_app(terminal, workspace_root, query, index))
+}
+
+pub fn show_stats_dashboard(
+    workspace_root: &Path,
+    dashboard: &StatsDashboard,
+    index: &RecordIndex,
+) -> Result<()> {
+    run_in_terminal(|terminal| run_stats_dashboard_app(terminal, workspace_root, dashboard, index))
 }
 
 fn run_in_terminal<T>(
@@ -364,6 +404,881 @@ fn run_stats_app(
     }
 }
 
+fn run_sync_session_choice_app(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    workspace_root: &Path,
+    session: &SyncBatchSession,
+) -> Result<SyncSessionChoice> {
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Min(6),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+            let header = Paragraph::new(vec![
+                Line::from(format!("工作区: {}", workspace_root.display())),
+                Line::from(format!(
+                    "检测到未完成 sync 批次，待处理项 {} 个",
+                    session
+                        .items
+                        .iter()
+                        .filter(|item| matches!(
+                            item.status,
+                            crate::models::SyncItemStatus::Pending
+                        ))
+                        .count()
+                )),
+            ])
+            .block(Block::default().borders(Borders::ALL).title("恢复批次"));
+            let body = Paragraph::new("按 r 继续恢复，按 n 重建当前批次")
+                .block(Block::default().borders(Borders::ALL));
+            let footer =
+                Paragraph::new("r 恢复  n 重建").block(Block::default().borders(Borders::ALL));
+
+            frame.render_widget(header, chunks[0]);
+            frame.render_widget(body, chunks[1]);
+            frame.render_widget(footer, chunks[2]);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('r') => return Ok(SyncSessionChoice::Resume),
+                KeyCode::Char('n') => return Ok(SyncSessionChoice::Rebuild),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn run_sync_batch_review_app(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    workspace_root: &Path,
+    session: &SyncBatchSession,
+) -> Result<Option<usize>> {
+    let mut state =
+        TableState::default().with_selected(initial_selection_for_count(session.items.len()));
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Min(8),
+                Constraint::Length(3),
+            ])
+            .split(area);
+            let header = Paragraph::new(vec![
+                Line::from(format!("工作区: {}", workspace_root.display())),
+                Line::from("从批次预览中选择要处理的文件"),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Sync 批次预览"),
+            );
+            let footer = Paragraph::new("↑/↓ 移动  Enter 进入详情  Esc 暂停并保留批次")
+                .block(Block::default().borders(Borders::ALL));
+            frame.render_widget(header, chunks[0]);
+
+            let header_row = Row::new([
+                Cell::from("文件"),
+                Cell::from("题号"),
+                Cell::from("类型"),
+                Cell::from("状态"),
+                Cell::from("提交数"),
+                Cell::from("默认候选"),
+            ])
+            .style(Style::default().add_modifier(Modifier::BOLD));
+            let rows = session
+                .items
+                .iter()
+                .map(|item| {
+                    Row::new([
+                        Cell::from(item.file.clone()),
+                        Cell::from(item.problem_id.clone().unwrap_or_else(|| "-".to_string())),
+                        Cell::from(match item.kind {
+                            SyncChangeKind::Active => "已修改",
+                            SyncChangeKind::Deleted => "已删除",
+                        }),
+                        Cell::from(match item.status {
+                            crate::models::SyncItemStatus::Pending => "待处理",
+                            crate::models::SyncItemStatus::Planned => "已决待提交",
+                            crate::models::SyncItemStatus::Skipped => "已跳过",
+                            crate::models::SyncItemStatus::Committed => "已提交",
+                            crate::models::SyncItemStatus::Invalid => "已失效",
+                        }),
+                        Cell::from(
+                            item.submissions
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                        ),
+                        Cell::from(
+                            item.default_submission_id
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                        ),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Percentage(32),
+                    Constraint::Length(10),
+                    Constraint::Length(10),
+                    Constraint::Length(12),
+                    Constraint::Length(10),
+                    Constraint::Length(12),
+                ],
+            )
+            .header(header_row)
+            .block(Block::default().borders(Borders::ALL))
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("> ");
+            frame.render_stateful_widget(table, chunks[1], &mut state);
+            frame.render_widget(footer, chunks[2]);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match apply_index_key_code(key.code, state.selected(), session.items.len()) {
+                IndexSelectionOutcome::Continue(next) => state.select(next),
+                IndexSelectionOutcome::Select(index) => return Ok(index),
+                IndexSelectionOutcome::Ignore => {}
+            }
+        }
+    }
+}
+
+fn run_sync_item_app(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    item: &SyncSessionItem,
+    metadata: Option<&ProblemMetadata>,
+    submissions: &[SubmissionRecord],
+) -> Result<SyncSelection> {
+    match item.kind {
+        SyncChangeKind::Deleted => run_sync_delete_app(terminal, item, metadata),
+        SyncChangeKind::Active => run_sync_submission_app(terminal, item, metadata, submissions),
+    }
+}
+
+fn run_sync_delete_app(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    item: &SyncSessionItem,
+    metadata: Option<&ProblemMetadata>,
+) -> Result<SyncSelection> {
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::vertical([
+                Constraint::Length(5),
+                Constraint::Min(6),
+                Constraint::Length(3),
+            ])
+            .split(area);
+            let header = Paragraph::new(sync_item_header_lines(item, metadata))
+                .block(Block::default().borders(Borders::ALL).title("确认删除"));
+            let body = Paragraph::new("检测到题解文件已删除\n按 Enter 记为 remove，按 Esc 跳过")
+                .block(Block::default().borders(Borders::ALL));
+            let footer = Paragraph::new("Enter 确认删除  Esc 跳过")
+                .block(Block::default().borders(Borders::ALL));
+            frame.render_widget(header, chunks[0]);
+            frame.render_widget(body, chunks[1]);
+            frame.render_widget(footer, chunks[2]);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match apply_delete_key_code(key.code) {
+                SelectionOutcome::Select(selection) => return Ok(selection),
+                SelectionOutcome::Continue(_) | SelectionOutcome::Ignore => {}
+            }
+        }
+    }
+}
+
+fn run_sync_submission_app(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    item: &SyncSessionItem,
+    metadata: Option<&ProblemMetadata>,
+    submissions: &[SubmissionRecord],
+) -> Result<SyncSelection> {
+    let mut state = TableState::default().with_selected(initial_selection(submissions));
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::vertical([
+                Constraint::Length(6),
+                Constraint::Min(6),
+                Constraint::Length(3),
+            ])
+            .split(area);
+            let header = Paragraph::new(sync_item_header_lines(item, metadata))
+                .block(Block::default().borders(Borders::ALL).title("选择同步结果"));
+            let footer = Paragraph::new("↑/↓ 移动  Enter 选择 submission  c 标记 chore  Esc 跳过")
+                .block(Block::default().borders(Borders::ALL));
+            frame.render_widget(header, chunks[0]);
+
+            if submissions.is_empty() {
+                let body = Paragraph::new("未找到提交记录\n按 c 标记 chore，按 Esc 跳过")
+                    .block(Block::default().borders(Borders::ALL).title("空状态"));
+                frame.render_widget(body, chunks[1]);
+            } else {
+                let header_row = Row::new([
+                    Cell::from("提交时间"),
+                    Cell::from("提交用户"),
+                    Cell::from("提交 ID"),
+                    Cell::from("结果"),
+                    Cell::from("分数"),
+                    Cell::from("耗时"),
+                    Cell::from("内存"),
+                ])
+                .style(Style::default().add_modifier(Modifier::BOLD));
+                let rows = submissions
+                    .iter()
+                    .map(build_submission_row)
+                    .collect::<Vec<_>>();
+                let table = Table::new(
+                    rows,
+                    [
+                        Constraint::Length(16),
+                        Constraint::Length(18),
+                        Constraint::Length(10),
+                        Constraint::Length(10),
+                        Constraint::Length(8),
+                        Constraint::Length(8),
+                        Constraint::Length(8),
+                    ],
+                )
+                .header(header_row)
+                .block(Block::default().borders(Borders::ALL))
+                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                .highlight_symbol("> ");
+                frame.render_stateful_widget(table, chunks[1], &mut state);
+            }
+
+            frame.render_widget(footer, chunks[2]);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match apply_submission_key_code(
+                key.code,
+                state.selected(),
+                submissions,
+                SubmissionSelectorMode::Sync,
+            ) {
+                SelectionOutcome::Continue(next_selection) => state.select(next_selection),
+                SelectionOutcome::Select(selection) => return Ok(selection),
+                SelectionOutcome::Ignore => {}
+            }
+        }
+    }
+}
+
+fn run_browser_app(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    workspace_root: &Path,
+    query: &BrowserQuery,
+    index: &RecordIndex,
+) -> Result<()> {
+    use crate::domain::browser::{
+        build_browser_state, filter_browser_files, filter_browser_problems, filter_timeline_rows,
+        timeline_rows_for_file, timeline_rows_for_problem,
+    };
+
+    #[derive(Clone)]
+    enum BrowserScreen {
+        Files,
+        Problems,
+        FileTimeline(String),
+        ProblemTimeline(String),
+    }
+
+    let state = build_browser_state(index);
+    let mut screen = if let Some(file_name) = query.timeline_file.as_ref() {
+        BrowserScreen::FileTimeline(file_name.clone())
+    } else if let Some(problem_id) = query.timeline_problem.as_ref() {
+        BrowserScreen::ProblemTimeline(problem_id.clone())
+    } else {
+        match query.root_view {
+            BrowserRootView::Files => BrowserScreen::Files,
+            BrowserRootView::Problems => BrowserScreen::Problems,
+        }
+    };
+    let mut selected = 0usize;
+
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Min(10),
+                Constraint::Length(3),
+            ])
+            .split(area);
+            let content = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
+                .split(chunks[1]);
+
+            let header = Paragraph::new(vec![
+                Line::from(format!("工作区: {}", workspace_root.display())),
+                Line::from(browser_query_summary(query)),
+            ])
+            .block(Block::default().borders(Borders::ALL).title("记录浏览工作台"));
+            frame.render_widget(header, chunks[0]);
+
+            match &screen {
+                BrowserScreen::Files => {
+                    let rows = filter_browser_files(&state.files, query);
+                    let capped = clamp_selection(selected, rows.len());
+                    let table = Table::new(
+                        rows.iter().map(|row| {
+                            Row::new([
+                                Cell::from(row.file_name.clone()),
+                                Cell::from(row.problem_id.clone()),
+                                Cell::from(row.verdict.clone()).style(verdict_style(&row.verdict)),
+                                Cell::from(
+                                    row.submission_time
+                                        .map(|value| value.format("%Y-%m-%d %H:%M").to_string())
+                                        .unwrap_or_else(|| "-".to_string()),
+                                ),
+                            ])
+                        }).collect::<Vec<_>>(),
+                        [
+                            Constraint::Percentage(44),
+                            Constraint::Length(10),
+                            Constraint::Length(8),
+                            Constraint::Length(16),
+                        ],
+                    )
+                    .header(
+                        Row::new(["文件", "题号", "结果", "记录时间"])
+                            .style(Style::default().add_modifier(Modifier::BOLD)),
+                    )
+                    .block(Block::default().borders(Borders::ALL).title("文件视角"))
+                    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                    .highlight_symbol("> ");
+                    let mut table_state = TableState::default().with_selected(initial_selection_for_count(rows.len()).map(|_| capped));
+                    frame.render_stateful_widget(table, content[0], &mut table_state);
+
+                    let detail = rows
+                        .get(capped)
+                        .and_then(|row| index.timeline_for_file(&row.file_name).first())
+                        .map(crate::app::support::render_record_detail)
+                        .unwrap_or_else(|| "没有匹配记录".to_string());
+                    frame.render_widget(
+                        Paragraph::new(detail).block(Block::default().borders(Borders::ALL).title("详情")),
+                        content[1],
+                    );
+                }
+                BrowserScreen::Problems => {
+                    let rows = filter_browser_problems(&state.problems, query);
+                    let capped = clamp_selection(selected, rows.len());
+                    let table = Table::new(
+                        rows.iter().map(|row| {
+                            Row::new([
+                                Cell::from(row.problem_id.clone()),
+                                Cell::from(row.verdict.clone()).style(verdict_style(&row.verdict)),
+                                Cell::from(row.files.len().to_string()),
+                                Cell::from(
+                                    row.submission_time
+                                        .map(|value| value.format("%Y-%m-%d %H:%M").to_string())
+                                        .unwrap_or_else(|| "-".to_string()),
+                                ),
+                            ])
+                        }).collect::<Vec<_>>(),
+                        [
+                            Constraint::Length(10),
+                            Constraint::Length(8),
+                            Constraint::Length(8),
+                            Constraint::Length(16),
+                        ],
+                    )
+                    .header(
+                        Row::new(["题号", "结果", "文件数", "记录时间"])
+                            .style(Style::default().add_modifier(Modifier::BOLD)),
+                    )
+                    .block(Block::default().borders(Borders::ALL).title("题目视角"))
+                    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                    .highlight_symbol("> ");
+                    let mut table_state = TableState::default().with_selected(initial_selection_for_count(rows.len()).map(|_| capped));
+                    frame.render_stateful_widget(table, content[0], &mut table_state);
+
+                    let detail = rows
+                        .get(capped)
+                        .map(|row| {
+                            format!(
+                                "题号: {}\n标题: {}\n结果: {}\n难度: {}\n文件: {}\n标签: {}\n训练摘要: {}",
+                                row.problem_id,
+                                row.title,
+                                row.verdict,
+                                row.difficulty,
+                                if row.files.is_empty() { "-".to_string() } else { row.files.join(", ") },
+                                if row.tags.is_empty() { "-".to_string() } else { row.tags.join(", ") },
+                                row.training_summary,
+                            )
+                        })
+                        .unwrap_or_else(|| "没有匹配记录".to_string());
+                    frame.render_widget(
+                        Paragraph::new(detail).block(Block::default().borders(Borders::ALL).title("详情")),
+                        content[1],
+                    );
+                }
+                BrowserScreen::FileTimeline(file_name) => {
+                    let rows = filter_timeline_rows(&timeline_rows_for_file(index, file_name), query);
+                    let capped = clamp_selection(selected, rows.len());
+                    let table = Table::new(
+                        rows.iter().map(|row| {
+                            Row::new([
+                                Cell::from(
+                                    row.submission_time
+                                        .map(|value| value.format("%Y-%m-%d %H:%M").to_string())
+                                        .unwrap_or_else(|| "-".to_string()),
+                                ),
+                                Cell::from(row.verdict.clone()).style(verdict_style(&row.verdict)),
+                                Cell::from(short_revision(&row.revision)),
+                            ])
+                        }).collect::<Vec<_>>(),
+                        [Constraint::Length(16), Constraint::Length(8), Constraint::Length(14)],
+                    )
+                    .header(
+                        Row::new(["提交时间", "结果", "Revision"])
+                            .style(Style::default().add_modifier(Modifier::BOLD)),
+                    )
+                    .block(Block::default().borders(Borders::ALL).title(format!("文件时间线: {file_name}")))
+                    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                    .highlight_symbol("> ");
+                    let mut table_state = TableState::default().with_selected(initial_selection_for_count(rows.len()).map(|_| capped));
+                    frame.render_stateful_widget(table, content[0], &mut table_state);
+                    let detail = rows
+                        .get(capped)
+                        .and_then(|row| index.timeline_for_file(file_name).iter().find(|record| record.revision == row.revision))
+                        .map(crate::app::support::render_record_detail)
+                        .unwrap_or_else(|| "没有匹配记录".to_string());
+                    frame.render_widget(
+                        Paragraph::new(detail).block(Block::default().borders(Borders::ALL).title("记录详情")),
+                        content[1],
+                    );
+                }
+                BrowserScreen::ProblemTimeline(problem_id) => {
+                    let rows = filter_timeline_rows(&timeline_rows_for_problem(index, problem_id), query);
+                    let capped = clamp_selection(selected, rows.len());
+                    let table = Table::new(
+                        rows.iter().map(|row| {
+                            Row::new([
+                                Cell::from(
+                                    row.submission_time
+                                        .map(|value| value.format("%Y-%m-%d %H:%M").to_string())
+                                        .unwrap_or_else(|| "-".to_string()),
+                                ),
+                                Cell::from(row.file_name.clone()),
+                                Cell::from(row.verdict.clone()).style(verdict_style(&row.verdict)),
+                            ])
+                        }).collect::<Vec<_>>(),
+                        [Constraint::Length(16), Constraint::Percentage(55), Constraint::Length(8)],
+                    )
+                    .header(
+                        Row::new(["提交时间", "文件", "结果"])
+                            .style(Style::default().add_modifier(Modifier::BOLD)),
+                    )
+                    .block(Block::default().borders(Borders::ALL).title(format!("题目时间线: {problem_id}")))
+                    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                    .highlight_symbol("> ");
+                    let mut table_state = TableState::default().with_selected(initial_selection_for_count(rows.len()).map(|_| capped));
+                    frame.render_stateful_widget(table, content[0], &mut table_state);
+                    let detail = rows
+                        .get(capped)
+                        .and_then(|row| index.timeline_for_problem(problem_id).iter().find(|record| record.revision == row.revision))
+                        .map(crate::app::support::render_record_detail)
+                        .unwrap_or_else(|| "没有匹配记录".to_string());
+                    frame.render_widget(
+                        Paragraph::new(detail).block(Block::default().borders(Borders::ALL).title("记录详情")),
+                        content[1],
+                    );
+                }
+            }
+
+            let footer = Paragraph::new(match screen {
+                BrowserScreen::Files | BrowserScreen::Problems => {
+                    "↑/↓ 移动  Tab 切换视角  Enter 打开时间线  q / Esc 退出"
+                }
+                BrowserScreen::FileTimeline(_) | BrowserScreen::ProblemTimeline(_) => {
+                    "↑/↓ 移动  b 返回  q / Esc 退出"
+                }
+            })
+            .block(Block::default().borders(Borders::ALL));
+            frame.render_widget(footer, chunks[2]);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match &mut screen {
+                BrowserScreen::Files => match key.code {
+                    KeyCode::Up => selected = selected.saturating_sub(1),
+                    KeyCode::Down => {
+                        let rows = filter_browser_files(&state.files, query);
+                        selected = (selected + 1).min(rows.len().saturating_sub(1));
+                    }
+                    KeyCode::Tab => {
+                        screen = BrowserScreen::Problems;
+                        selected = 0;
+                    }
+                    KeyCode::Enter => {
+                        let rows = filter_browser_files(&state.files, query);
+                        if let Some(row) = rows.get(clamp_selection(selected, rows.len())) {
+                            screen = BrowserScreen::FileTimeline(row.file_name.clone());
+                            selected = 0;
+                        }
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    _ => {}
+                },
+                BrowserScreen::Problems => match key.code {
+                    KeyCode::Up => selected = selected.saturating_sub(1),
+                    KeyCode::Down => {
+                        let rows = filter_browser_problems(&state.problems, query);
+                        selected = (selected + 1).min(rows.len().saturating_sub(1));
+                    }
+                    KeyCode::Tab => {
+                        screen = BrowserScreen::Files;
+                        selected = 0;
+                    }
+                    KeyCode::Enter => {
+                        let rows = filter_browser_problems(&state.problems, query);
+                        if let Some(row) = rows.get(clamp_selection(selected, rows.len())) {
+                            screen = BrowserScreen::ProblemTimeline(row.problem_id.clone());
+                            selected = 0;
+                        }
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    _ => {}
+                },
+                BrowserScreen::FileTimeline(_) | BrowserScreen::ProblemTimeline(_) => {
+                    match key.code {
+                        KeyCode::Up => selected = selected.saturating_sub(1),
+                        KeyCode::Down => selected = selected.saturating_add(1),
+                        KeyCode::Char('b') => {
+                            screen = match query.root_view {
+                                BrowserRootView::Files => BrowserScreen::Files,
+                                BrowserRootView::Problems => BrowserScreen::Problems,
+                            };
+                            selected = 0;
+                        }
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn run_stats_dashboard_app(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    workspace_root: &Path,
+    dashboard: &StatsDashboard,
+    index: &RecordIndex,
+) -> Result<()> {
+    let mut review_selected = 0usize;
+    let mut review_mode = dashboard.start_in_review;
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Length(8),
+                Constraint::Min(8),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+            let header = Paragraph::new(stats_header_lines(workspace_root, &dashboard.summary))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("训练统计与建议"),
+                );
+            let overview = Paragraph::new(stats_overview_lines(&dashboard.summary))
+                .block(Block::default().borders(Borders::ALL).title("总体概览"));
+            frame.render_widget(header, chunks[0]);
+            frame.render_widget(overview, chunks[1]);
+
+            if review_mode {
+                let content =
+                    Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)])
+                        .split(chunks[2]);
+                let rows = dashboard
+                    .review_candidates
+                    .iter()
+                    .map(|item| {
+                        Row::new([
+                            Cell::from(item.kind.clone()),
+                            Cell::from(item.label.clone()),
+                            Cell::from(item.verdict.clone().unwrap_or_else(|| "-".to_string())),
+                        ])
+                    })
+                    .collect::<Vec<_>>();
+                let table = Table::new(
+                    rows,
+                    [
+                        Constraint::Length(12),
+                        Constraint::Percentage(56),
+                        Constraint::Length(10),
+                    ],
+                )
+                .header(
+                    Row::new(["类型", "标签", "结果"])
+                        .style(Style::default().add_modifier(Modifier::BOLD)),
+                )
+                .block(Block::default().borders(Borders::ALL).title("复习建议"))
+                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                .highlight_symbol("> ");
+                let mut table_state = TableState::default().with_selected(
+                    initial_selection_for_count(dashboard.review_candidates.len()).map(|_| {
+                        clamp_selection(review_selected, dashboard.review_candidates.len())
+                    }),
+                );
+                frame.render_stateful_widget(table, content[0], &mut table_state);
+
+                let detail = dashboard
+                    .review_candidates
+                    .get(clamp_selection(
+                        review_selected,
+                        dashboard.review_candidates.len(),
+                    ))
+                    .map(|item| {
+                        format!(
+                            "标签: {}\n结果: {}\n原因: {}\n上次时间: {}",
+                            item.label,
+                            item.verdict.clone().unwrap_or_else(|| "-".to_string()),
+                            item.reason,
+                            item.last_submission_time
+                                .map(|value| value.to_rfc3339())
+                                .unwrap_or_else(|| "-".to_string())
+                        )
+                    })
+                    .unwrap_or_else(|| "当前没有可用的复习建议".to_string());
+                frame.render_widget(
+                    Paragraph::new(detail)
+                        .block(Block::default().borders(Borders::ALL).title("建议详情")),
+                    content[1],
+                );
+            } else {
+                let detail_chunks = Layout::horizontal([
+                    Constraint::Percentage(34),
+                    Constraint::Percentage(33),
+                    Constraint::Percentage(33),
+                ])
+                .split(chunks[2]);
+                let verdicts = Paragraph::new(distribution_lines(
+                    &dashboard.summary.verdict_counts,
+                    "当前工作区本地 solve 记录的结果分布",
+                ))
+                .block(Block::default().borders(Borders::ALL).title("结果分布"));
+                let difficulties = Paragraph::new(distribution_lines(
+                    &dashboard.summary.difficulty_counts,
+                    "按题号去重后的最新记录难度分布",
+                ))
+                .block(Block::default().borders(Borders::ALL).title("难度分布"));
+                let tags = Paragraph::new(distribution_lines(
+                    &dashboard.summary.tag_counts,
+                    "按题号去重后的最新记录算法标签分布",
+                ))
+                .block(Block::default().borders(Borders::ALL).title("标签分布"));
+                frame.render_widget(verdicts, detail_chunks[0]);
+                frame.render_widget(difficulties, detail_chunks[1]);
+                frame.render_widget(tags, detail_chunks[2]);
+            }
+
+            let footer = Paragraph::new(if review_mode {
+                "↑/↓ 移动  Enter 打开对应历史  b 返回统计页  f 文件浏览  p 题目浏览  q / Esc 退出"
+            } else {
+                "r 查看复习建议  f 文件浏览  p 题目浏览  q / Esc 退出"
+            })
+            .block(Block::default().borders(Borders::ALL));
+            frame.render_widget(footer, chunks[3]);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc if !review_mode => return Ok(()),
+                KeyCode::Char('f') => {
+                    run_browser_app(
+                        terminal,
+                        workspace_root,
+                        &BrowserQuery {
+                            root_view: BrowserRootView::Files,
+                            ..BrowserQuery::default()
+                        },
+                        index,
+                    )?;
+                }
+                KeyCode::Char('p') => {
+                    run_browser_app(
+                        terminal,
+                        workspace_root,
+                        &BrowserQuery {
+                            root_view: BrowserRootView::Problems,
+                            ..BrowserQuery::default()
+                        },
+                        index,
+                    )?;
+                }
+                KeyCode::Char('r') if !review_mode => {
+                    review_mode = true;
+                    review_selected = 0;
+                }
+                KeyCode::Char('b') if review_mode => review_mode = false,
+                KeyCode::Up if review_mode => review_selected = review_selected.saturating_sub(1),
+                KeyCode::Down if review_mode => {
+                    review_selected = (review_selected + 1)
+                        .min(dashboard.review_candidates.len().saturating_sub(1));
+                }
+                KeyCode::Enter if review_mode => {
+                    if let Some(candidate) = dashboard.review_candidates.get(clamp_selection(
+                        review_selected,
+                        dashboard.review_candidates.len(),
+                    )) {
+                        let query = if let Some(problem_id) = candidate.problem_id.as_ref() {
+                            BrowserQuery {
+                                root_view: BrowserRootView::Problems,
+                                problem_id: Some(problem_id.clone()),
+                                timeline_problem: Some(problem_id.clone()),
+                                ..BrowserQuery::default()
+                            }
+                        } else {
+                            BrowserQuery {
+                                root_view: BrowserRootView::Problems,
+                                tag: Some(candidate.label.clone()),
+                                ..BrowserQuery::default()
+                            }
+                        };
+                        run_browser_app(terminal, workspace_root, &query, index)?;
+                    }
+                }
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn sync_item_header_lines(
+    item: &SyncSessionItem,
+    metadata: Option<&ProblemMetadata>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(format!("文件: {}", item.file)),
+        Line::from(format!(
+            "题号: {}  类型: {}",
+            item.problem_id.as_deref().unwrap_or("-"),
+            match item.kind {
+                SyncChangeKind::Active => "已修改",
+                SyncChangeKind::Deleted => "已删除",
+            }
+        )),
+    ];
+    if let Some(metadata) = metadata {
+        lines.push(Line::from(format!(
+            "标题: {}  难度: {}",
+            metadata.title,
+            metadata.difficulty.as_deref().unwrap_or("-")
+        )));
+    }
+    if !item.warnings.is_empty() {
+        for warning in &item.warnings {
+            lines.push(Line::from(format!("告警: {}", warning.message)));
+        }
+    } else if let Some(reason) = item.invalid_reason.as_deref() {
+        lines.push(Line::from(format!("状态: {reason}")));
+    }
+    lines
+}
+
+fn browser_query_summary(query: &BrowserQuery) -> String {
+    let mut parts = vec![match query.root_view {
+        BrowserRootView::Files => "视角: files".to_string(),
+        BrowserRootView::Problems => "视角: problems".to_string(),
+    }];
+    if let Some(problem_id) = query.problem_id.as_deref() {
+        parts.push(format!("题号={problem_id}"));
+    }
+    if let Some(file_name) = query.file_name.as_deref() {
+        parts.push(format!("文件={file_name}"));
+    }
+    if let Some(verdict) = query.verdict.as_deref() {
+        parts.push(format!("结果={verdict}"));
+    }
+    if let Some(difficulty) = query.difficulty.as_deref() {
+        parts.push(format!("难度={difficulty}"));
+    }
+    if let Some(tag) = query.tag.as_deref() {
+        parts.push(format!("标签={tag}"));
+    }
+    if let Some(days) = query.days {
+        parts.push(format!("最近 {days} 天"));
+    }
+    parts.join("  ")
+}
+
+fn initial_selection_for_count(count: usize) -> Option<usize> {
+    (count > 0).then_some(0)
+}
+
+fn clamp_selection(selected: usize, count: usize) -> usize {
+    if count == 0 {
+        0
+    } else {
+        selected.min(count - 1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexSelectionOutcome {
+    Continue(Option<usize>),
+    Select(Option<usize>),
+    Ignore,
+}
+
+fn apply_index_key_code(
+    key: KeyCode,
+    selected: Option<usize>,
+    count: usize,
+) -> IndexSelectionOutcome {
+    match key {
+        KeyCode::Up => {
+            let next = selected.unwrap_or(0).saturating_sub(1);
+            IndexSelectionOutcome::Continue(initial_selection_for_count(count).map(|_| next))
+        }
+        KeyCode::Down => {
+            let Some(current) = selected else {
+                return IndexSelectionOutcome::Ignore;
+            };
+            IndexSelectionOutcome::Continue(Some((current + 1).min(count.saturating_sub(1))))
+        }
+        KeyCode::Enter => IndexSelectionOutcome::Select(selected),
+        KeyCode::Esc => IndexSelectionOutcome::Select(None),
+        _ => IndexSelectionOutcome::Ignore,
+    }
+}
+
 fn initial_selection(submissions: &[SubmissionRecord]) -> Option<usize> {
     (!submissions.is_empty()).then_some(0)
 }
@@ -473,13 +1388,17 @@ fn verdict_style(verdict: &str) -> Style {
 }
 
 fn stats_header_lines(workspace_root: &Path, summary: &StatsSummary) -> Vec<Line<'static>> {
-    vec![
+    let mut lines = vec![
         Line::from(format!("工作区: {}", workspace_root.display())),
         Line::from(format!(
             "统计范围: 本地 jj 历史中的 solve(...) commit  |  记录数: {}",
             summary.total_solve_records
         )),
-    ]
+    ];
+    if let Some(days) = summary.time_window_days {
+        lines.push(Line::from(format!("时间窗口: 最近 {days} 天")));
+    }
+    lines
 }
 
 fn stats_overview_lines(summary: &StatsSummary) -> Vec<Line<'static>> {
@@ -488,6 +1407,8 @@ fn stats_overview_lines(summary: &StatsSummary) -> Vec<Line<'static>> {
         Line::from(format!("solve 记录数: {}", summary.total_solve_records)),
         Line::from(format!("唯一题目 AC: {}", summary.unique_ac_count)),
         Line::from(format!("唯一题目非 AC: {}", summary.unique_non_ac_count)),
+        Line::from(format!("首次 AC: {}", summary.first_ac_count)),
+        Line::from(format!("重复练习题数: {}", summary.repeated_practice_count)),
     ]
 }
 
@@ -646,12 +1567,15 @@ mod tests {
         stats_empty_state_lines, stats_header_lines, stats_overview_lines,
         submission_empty_state_text, submission_footer_text, verdict_style,
     };
-    use crate::models::{HistoricalSolveRecord, ProblemMetadata, StatsSummary, SubmissionRecord};
+    use crate::models::{
+        HistoricalSolveRecord, ProblemMetadata, StatsSummary, SubmissionRecord, TrainingFields,
+    };
 
     fn sample_submissions() -> Vec<SubmissionRecord> {
         vec![
             SubmissionRecord {
                 submission_id: 1,
+                problem_id: Some("P1001".to_string()),
                 submitter: "alice".to_string(),
                 verdict: "AC".to_string(),
                 score: Some(100),
@@ -661,6 +1585,7 @@ mod tests {
             },
             SubmissionRecord {
                 submission_id: 2,
+                problem_id: Some("P1001".to_string()),
                 submitter: "bob".to_string(),
                 verdict: "WA".to_string(),
                 score: Some(60),
@@ -695,11 +1620,16 @@ mod tests {
                     problem_id: "P1001".to_string(),
                     title: "A+B Problem".to_string(),
                     verdict: "WA".to_string(),
+                    score: None,
+                    time_ms: None,
+                    memory_mb: None,
                     difficulty: "入门".to_string(),
                     tags: vec!["模拟".to_string()],
+                    source: "Luogu".to_string(),
                     submission_id: Some(1),
                     submission_time: None,
                     file_name: "P1001.cpp".to_string(),
+                    training: TrainingFields::default(),
                     source_order: 1,
                 },
             },
@@ -709,11 +1639,16 @@ mod tests {
                     problem_id: "P1001".to_string(),
                     title: "A+B Problem".to_string(),
                     verdict: "AC".to_string(),
+                    score: None,
+                    time_ms: None,
+                    memory_mb: None,
                     difficulty: "入门".to_string(),
                     tags: vec!["模拟".to_string()],
+                    source: "Luogu".to_string(),
                     submission_id: Some(2),
                     submission_time: None,
                     file_name: "P1001.cpp".to_string(),
+                    training: TrainingFields::default(),
                     source_order: 0,
                 },
             },
@@ -915,6 +1850,9 @@ mod tests {
             unique_problem_count: 2,
             unique_ac_count: 1,
             unique_non_ac_count: 1,
+            first_ac_count: 1,
+            repeated_practice_count: 1,
+            time_window_days: Some(7),
             verdict_counts: vec![("AC".to_string(), 2), ("WA".to_string(), 1)],
             difficulty_counts: vec![("入门".to_string(), 2)],
             tag_counts: vec![("模拟".to_string(), 2), ("二分".to_string(), 1)],
@@ -929,8 +1867,10 @@ mod tests {
 
         assert!(header.contains("/tmp/aclog"));
         assert!(header.contains("solve(...)"));
+        assert!(header.contains("最近 7 天"));
         assert!(overview.contains("唯一题目数: 2"));
         assert!(overview.contains("solve 记录数: 3"));
+        assert!(overview.contains("首次 AC: 1"));
         assert!(empty_state.contains("还没有已记录的做题提交"));
     }
 
@@ -961,6 +1901,9 @@ mod tests {
             unique_problem_count: 0,
             unique_ac_count: 0,
             unique_non_ac_count: 0,
+            first_ac_count: 0,
+            repeated_practice_count: 0,
+            time_window_days: None,
             verdict_counts: vec![],
             difficulty_counts: vec![],
             tag_counts: vec![],
@@ -970,6 +1913,9 @@ mod tests {
             unique_problem_count: 1,
             unique_ac_count: 1,
             unique_non_ac_count: 0,
+            first_ac_count: 1,
+            repeated_practice_count: 0,
+            time_window_days: None,
             verdict_counts: vec![("AC".to_string(), 1)],
             difficulty_counts: vec![("入门".to_string(), 1)],
             tag_counts: vec![("模拟".to_string(), 1)],
