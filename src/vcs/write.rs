@@ -19,7 +19,7 @@ pub async fn init_repo(workspace_root: &Path) -> Result<()> {
 }
 
 #[instrument(level = "info", skip_all, fields(workspace = %workspace_root.display(), commits = commits.len()))]
-pub async fn create_commits_for_files(
+pub(crate) async fn create_commits_for_files(
     workspace_root: &Path,
     commits: &[(String, String)],
 ) -> Result<()> {
@@ -41,7 +41,7 @@ pub async fn create_commits_for_files(
 }
 
 #[instrument(level = "info", skip_all, fields(workspace = %workspace_root.display(), revision))]
-pub async fn rewrite_commit_description(
+pub(crate) async fn rewrite_commit_description(
     workspace_root: &Path,
     revision: &str,
     message: &str,

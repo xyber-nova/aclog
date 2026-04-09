@@ -24,12 +24,12 @@ pub async fn run(
     info!("开始编辑训练字段");
 
     let paths = AclogPaths::new(workspace)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    deps.ensure_workspace().await?;
     let target = resolve_solution_file_target(&paths, &file, deps).await?;
-    let record = resolve_record_for_file(&paths, &target, record_rev.as_deref(), deps).await?;
+    let record = resolve_record_for_file(&target, record_rev.as_deref(), deps).await?;
     let updated = apply_training_patch(&record, &patch)?;
     let message = crate::commit_format::build_solve_record_message(&updated);
-    deps.rewrite_commit_description(&paths.workspace_root, &record.revision, &message)
+    deps.rewrite_commit_description(&record.revision, &message)
         .await?;
 
     info!(

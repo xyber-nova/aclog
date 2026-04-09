@@ -29,15 +29,18 @@ pub async fn run_init(workspace: PathBuf) -> Result<()> {
 }
 
 pub async fn run_sync(workspace: PathBuf, options: SyncOptions) -> Result<()> {
-    sync::run(workspace, options, &LiveDeps, &TerminalUi).await
+    let deps = LiveDeps::new(workspace.clone());
+    sync::run(workspace, options, &deps, &TerminalUi).await
 }
 
 pub async fn run_stats(workspace: PathBuf) -> Result<()> {
-    stats::run(workspace, &StatsOptions::default(), &LiveDeps, &TerminalUi).await
+    let deps = LiveDeps::new(workspace.clone());
+    stats::run(workspace, &StatsOptions::default(), &deps, &TerminalUi).await
 }
 
 pub async fn run_stats_with_options(workspace: PathBuf, options: StatsOptions) -> Result<()> {
-    stats::run(workspace, &options, &LiveDeps, &TerminalUi).await
+    let deps = LiveDeps::new(workspace.clone());
+    stats::run(workspace, &options, &deps, &TerminalUi).await
 }
 
 pub async fn run_record_bind(
@@ -45,7 +48,8 @@ pub async fn run_record_bind(
     file: PathBuf,
     submission_id: Option<u64>,
 ) -> Result<()> {
-    record_bind::run(workspace, file, submission_id, &LiveDeps, &TerminalUi).await
+    let deps = LiveDeps::new(workspace.clone());
+    record_bind::run(workspace, file, submission_id, &deps, &TerminalUi).await
 }
 
 pub async fn run_record_rebind(
@@ -54,23 +58,26 @@ pub async fn run_record_rebind(
     record_rev: Option<String>,
     submission_id: Option<u64>,
 ) -> Result<()> {
+    let deps = LiveDeps::new(workspace.clone());
     record_rebind::run(
         workspace,
         file,
         record_rev,
         submission_id,
-        &LiveDeps,
+        &deps,
         &TerminalUi,
     )
     .await
 }
 
 pub async fn run_record_list(workspace: PathBuf, query: support::RecordListQuery) -> Result<()> {
-    record_list::run(workspace, &query, &LiveDeps).await
+    let deps = LiveDeps::new(workspace.clone());
+    record_list::run(workspace, &query, &deps).await
 }
 
 pub async fn run_record_browse(workspace: PathBuf, query: BrowserQuery) -> Result<()> {
-    browser::run(workspace, query, &LiveDeps, &TerminalUi).await
+    let deps = LiveDeps::new(workspace.clone());
+    browser::run(workspace, query, &deps, &TerminalUi).await
 }
 
 pub async fn run_record_show(
@@ -79,7 +86,8 @@ pub async fn run_record_show(
     record_rev: Option<String>,
     json: bool,
 ) -> Result<()> {
-    record_show::run(workspace, file, record_rev, json, &LiveDeps).await
+    let deps = LiveDeps::new(workspace.clone());
+    record_show::run(workspace, file, record_rev, json, &deps).await
 }
 
 pub async fn run_record_edit(
@@ -88,7 +96,8 @@ pub async fn run_record_edit(
     record_rev: Option<String>,
     patch: support::TrainingFieldsPatch,
 ) -> Result<()> {
-    record_edit::run(workspace, file, record_rev, patch, &LiveDeps).await
+    let deps = LiveDeps::new(workspace.clone());
+    record_edit::run(workspace, file, record_rev, patch, &deps).await
 }
 
 pub async fn run_sync_with<D>(

@@ -1,13 +1,13 @@
 #![allow(async_fn_in_trait)]
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use color_eyre::Result;
 
 use crate::{
     config::{AclogPaths, AppConfig},
-    domain::{problem::ProblemMetadata, submission::SubmissionRecord},
-    vcs::ProblemFileChange,
+    domain::{problem::ProblemMetadata, record_index::RecordIndex, submission::SubmissionRecord},
+    vcs::{JjRepoActorHandle, ProblemFileChange},
 };
 
 pub trait ProblemProvider {
@@ -32,50 +32,36 @@ pub trait ProblemProvider {
     ) -> Result<std::collections::HashSet<String>>;
 }
 
-pub trait RepoGateway {
-    async fn ensure_jj_workspace(&self, workspace_root: &Path) -> Result<()>;
-    async fn collect_changed_problem_files(
-        &self,
-        workspace_root: &Path,
-    ) -> Result<Vec<ProblemFileChange>>;
-    async fn create_commits_for_files(
-        &self,
-        workspace_root: &Path,
-        commits: &[(String, String)],
-    ) -> Result<()>;
-    async fn collect_solve_commit_messages(&self, workspace_root: &Path) -> Result<Vec<String>>;
-    async fn collect_commit_descriptions(
-        &self,
-        workspace_root: &Path,
-    ) -> Result<Vec<(String, String)>>;
-    async fn resolve_single_commit_id(
-        &self,
-        workspace_root: &Path,
-        revset_str: &str,
-    ) -> Result<String>;
-    async fn is_tracked_file(
-        &self,
-        workspace_root: &Path,
-        repo_relative_path: &str,
-    ) -> Result<bool>;
-    async fn rewrite_commit_description(
-        &self,
-        workspace_root: &Path,
-        revision: &str,
-        message: &str,
-    ) -> Result<()>;
+pub trait JjRepository {
+    async fn ensure_workspace(&self) -> Result<()>;
+    async fn detect_working_copy_changes(&self) -> Result<Vec<ProblemFileChange>>;
+    async fn load_record_index(&self) -> Result<RecordIndex>;
+    async fn resolve_revision(&self, revset_str: &str) -> Result<String>;
+    async fn is_tracked_file(&self, repo_relative_path: &str) -> Result<bool>;
+    async fn create_commits(&self, commits: &[(String, String)]) -> Result<()>;
+    async fn rewrite_commit_description(&self, revision: &str, message: &str) -> Result<()>;
 }
 
 pub trait OutputSink {
     fn write_output(&self, text: &str) -> Result<()>;
 }
 
-pub trait AppDeps: ProblemProvider + RepoGateway + OutputSink {}
+pub trait AppDeps: ProblemProvider + JjRepository + OutputSink {}
 
-impl<T> AppDeps for T where T: ProblemProvider + RepoGateway + OutputSink {}
+impl<T> AppDeps for T where T: ProblemProvider + JjRepository + OutputSink {}
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LiveDeps;
+#[derive(Debug, Clone)]
+pub struct LiveDeps {
+    repo: JjRepoActorHandle,
+}
+
+impl LiveDeps {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self {
+            repo: JjRepoActorHandle::for_workspace(workspace_root),
+        }
+    }
+}
 
 impl ProblemProvider for LiveDeps {
     async fn resolve_problem_metadata(
@@ -105,60 +91,35 @@ impl ProblemProvider for LiveDeps {
     }
 }
 
-impl RepoGateway for LiveDeps {
-    async fn ensure_jj_workspace(&self, workspace_root: &Path) -> Result<()> {
-        crate::vcs::ensure_jj_workspace(workspace_root)
+impl JjRepository for LiveDeps {
+    async fn ensure_workspace(&self) -> Result<()> {
+        self.repo.ensure_workspace().await
     }
 
-    async fn collect_changed_problem_files(
-        &self,
-        workspace_root: &Path,
-    ) -> Result<Vec<ProblemFileChange>> {
-        crate::vcs::collect_changed_problem_files(workspace_root).await
+    async fn detect_working_copy_changes(&self) -> Result<Vec<ProblemFileChange>> {
+        self.repo.detect_working_copy_changes().await
     }
 
-    async fn create_commits_for_files(
-        &self,
-        workspace_root: &Path,
-        commits: &[(String, String)],
-    ) -> Result<()> {
-        crate::vcs::create_commits_for_files(workspace_root, commits).await
+    async fn load_record_index(&self) -> Result<RecordIndex> {
+        self.repo.load_record_index().await
     }
 
-    async fn collect_solve_commit_messages(&self, workspace_root: &Path) -> Result<Vec<String>> {
-        crate::vcs::collect_solve_commit_messages(workspace_root).await
+    async fn resolve_revision(&self, revset_str: &str) -> Result<String> {
+        self.repo.resolve_revision(revset_str).await
     }
 
-    async fn collect_commit_descriptions(
-        &self,
-        workspace_root: &Path,
-    ) -> Result<Vec<(String, String)>> {
-        crate::vcs::collect_commit_descriptions(workspace_root).await
+    async fn is_tracked_file(&self, repo_relative_path: &str) -> Result<bool> {
+        self.repo.is_tracked_file(repo_relative_path).await
     }
 
-    async fn resolve_single_commit_id(
-        &self,
-        workspace_root: &Path,
-        revset_str: &str,
-    ) -> Result<String> {
-        crate::vcs::resolve_single_commit_id(workspace_root, revset_str).await
+    async fn create_commits(&self, commits: &[(String, String)]) -> Result<()> {
+        self.repo.create_commits(commits).await
     }
 
-    async fn is_tracked_file(
-        &self,
-        workspace_root: &Path,
-        repo_relative_path: &str,
-    ) -> Result<bool> {
-        crate::vcs::is_tracked_file(workspace_root, repo_relative_path).await
-    }
-
-    async fn rewrite_commit_description(
-        &self,
-        workspace_root: &Path,
-        revision: &str,
-        message: &str,
-    ) -> Result<()> {
-        crate::vcs::rewrite_commit_description(workspace_root, revision, message).await
+    async fn rewrite_commit_description(&self, revision: &str, message: &str) -> Result<()> {
+        self.repo
+            .rewrite_commit_description(revision, message)
+            .await
     }
 }
 

@@ -16,7 +16,7 @@ use crate::{
     ui::interaction::UserInterface,
 };
 
-use super::deps::RepoGateway;
+use super::deps::JjRepository;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SolutionFileTarget {
@@ -53,7 +53,7 @@ pub struct TrainingFieldsPatch {
 pub(crate) async fn resolve_solution_file_target(
     paths: &AclogPaths,
     file: &Path,
-    repo: &impl RepoGateway,
+    repo: &impl JjRepository,
 ) -> Result<SolutionFileTarget> {
     let absolute_path = if file.is_absolute() {
         file.to_path_buf()
@@ -80,10 +80,7 @@ pub(crate) async fn resolve_solution_file_target(
         .ok_or_else(|| eyre!("无法解析文件名 {}", canonical_path.display()))?;
     let problem_id = crate::problem::extract_problem_id(file_name)
         .ok_or_else(|| eyre!("无法从文件名 {} 提取题号", file_name))?;
-    if !repo
-        .is_tracked_file(&paths.workspace_root, &repo_relative_path)
-        .await?
-    {
+    if !repo.is_tracked_file(&repo_relative_path).await? {
         return Err(eyre!("文件 {} 未被当前 jj 工作区跟踪", repo_relative_path));
     }
     Ok(SolutionFileTarget {
@@ -120,15 +117,8 @@ pub(crate) fn history_records_for_file(
         .collect()
 }
 
-pub(crate) async fn load_record_index(
-    paths: &AclogPaths,
-    repo: &impl RepoGateway,
-) -> Result<RecordIndex> {
-    let history_entries = repo
-        .collect_commit_descriptions(&paths.workspace_root)
-        .await?;
-    let history_records = crate::commit_format::parse_historical_solve_records(&history_entries);
-    Ok(RecordIndex::build(&history_records))
+pub(crate) async fn load_record_index(repo: &impl JjRepository) -> Result<RecordIndex> {
+    repo.load_record_index().await
 }
 
 pub(crate) fn select_submission_for_record(
@@ -151,11 +141,10 @@ pub(crate) fn select_submission_for_record(
 }
 
 pub(crate) async fn select_record_for_rebind(
-    paths: &AclogPaths,
     target: &SolutionFileTarget,
     candidates: &[HistoricalSolveRecord],
     record_rev: Option<&str>,
-    repo: &impl RepoGateway,
+    repo: &impl JjRepository,
     ui: &impl UserInterface,
 ) -> Result<HistoricalSolveRecord> {
     if candidates.is_empty() {
@@ -166,9 +155,7 @@ pub(crate) async fn select_record_for_rebind(
     }
 
     if let Some(record_rev) = record_rev {
-        let revision = repo
-            .resolve_single_commit_id(&paths.workspace_root, record_rev)
-            .await?;
+        let revision = repo.resolve_revision(record_rev).await?;
         let entry = candidates
             .iter()
             .find(|entry| entry.revision == revision)
@@ -193,16 +180,13 @@ pub(crate) async fn select_record_for_rebind(
 }
 
 pub(crate) async fn resolve_record_for_file(
-    paths: &AclogPaths,
     target: &SolutionFileTarget,
     record_rev: Option<&str>,
-    repo: &impl RepoGateway,
+    repo: &impl JjRepository,
 ) -> Result<HistoricalSolveRecord> {
-    let index = load_record_index(paths, repo).await?;
+    let index = load_record_index(repo).await?;
     if let Some(record_rev) = record_rev {
-        let revision = repo
-            .resolve_single_commit_id(&paths.workspace_root, record_rev)
-            .await?;
+        let revision = repo.resolve_revision(record_rev).await?;
         let record = index
             .all_records()
             .iter()

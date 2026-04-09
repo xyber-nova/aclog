@@ -32,8 +32,8 @@ pub async fn run(
     info!("开始打开记录浏览工作台");
 
     let paths = AclogPaths::new(workspace)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
-    let index = load_record_index(&paths, deps).await?;
+    deps.ensure_workspace().await?;
+    let index = load_record_index(deps).await?;
     let state = build_browser_state(&index);
 
     if query.json {

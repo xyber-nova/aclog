@@ -23,6 +23,8 @@ use jj_lib::{
 };
 use tracing::{debug, info, instrument};
 
+use crate::domain::record_index::RecordIndex;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProblemFileChange {
     pub path: String,
@@ -36,7 +38,7 @@ pub enum ProblemFileChangeKind {
 }
 
 #[instrument(level = "debug", skip_all, fields(workspace = %workspace_root.display()))]
-pub fn ensure_jj_workspace(workspace_root: &Path) -> Result<()> {
+pub(crate) fn ensure_jj_workspace(workspace_root: &Path) -> Result<()> {
     if workspace_root.join(".jj").is_dir() {
         debug!("已验证 jj 工作区");
         Ok(())
@@ -46,7 +48,7 @@ pub fn ensure_jj_workspace(workspace_root: &Path) -> Result<()> {
 }
 
 #[instrument(level = "info", skip_all, fields(workspace = %workspace_root.display()))]
-pub async fn collect_changed_problem_files(
+pub(crate) async fn collect_changed_problem_files(
     workspace_root: &Path,
 ) -> Result<Vec<ProblemFileChange>> {
     let (mut workspace, repo) = load_workspace_and_repo(workspace_root).await?;
@@ -93,21 +95,9 @@ pub async fn collect_changed_problem_files(
 }
 
 #[instrument(level = "info", skip_all, fields(workspace = %workspace_root.display()))]
-pub async fn collect_solve_commit_messages(workspace_root: &Path) -> Result<Vec<String>> {
-    ensure_jj_workspace(workspace_root)?;
-    let messages = collect_commit_descriptions(workspace_root)
-        .await?
-        .into_iter()
-        .map(|(_, description)| description)
-        .collect::<Vec<_>>();
-
-    info!(messages = messages.len(), "已收集本地 solve 历史候选提交");
-    debug!(?messages, "本地统计候选提交详情");
-    Ok(messages)
-}
-
-#[instrument(level = "info", skip_all, fields(workspace = %workspace_root.display()))]
-pub async fn collect_commit_descriptions(workspace_root: &Path) -> Result<Vec<(String, String)>> {
+pub(crate) async fn collect_commit_descriptions(
+    workspace_root: &Path,
+) -> Result<Vec<(String, String)>> {
     ensure_jj_workspace(workspace_root)?;
     let (_workspace, repo) = load_workspace_and_repo(workspace_root).await?;
     let commits = read_commits_for_revset(repo.as_ref(), "all()")?;
@@ -119,8 +109,17 @@ pub async fn collect_commit_descriptions(workspace_root: &Path) -> Result<Vec<(S
     Ok(entries)
 }
 
+pub(crate) async fn load_record_index(workspace_root: &Path) -> Result<RecordIndex> {
+    let entries = collect_commit_descriptions(workspace_root).await?;
+    let records = crate::commit_format::parse_historical_solve_records(&entries);
+    Ok(RecordIndex::build(&records))
+}
+
 #[instrument(level = "debug", skip_all, fields(workspace = %workspace_root.display(), revset = revset_str))]
-pub async fn resolve_single_commit_id(workspace_root: &Path, revset_str: &str) -> Result<String> {
+pub(crate) async fn resolve_single_commit_id(
+    workspace_root: &Path,
+    revset_str: &str,
+) -> Result<String> {
     ensure_jj_workspace(workspace_root)?;
     let (_workspace, repo) = load_workspace_and_repo(workspace_root).await?;
     let commits = read_commits_for_revset(repo.as_ref(), revset_str)?;
@@ -134,7 +133,10 @@ pub async fn resolve_single_commit_id(workspace_root: &Path, revset_str: &str) -
 }
 
 #[instrument(level = "debug", skip_all, fields(workspace = %workspace_root.display(), file = repo_relative_path))]
-pub async fn is_tracked_file(workspace_root: &Path, repo_relative_path: &str) -> Result<bool> {
+pub(crate) async fn is_tracked_file(
+    workspace_root: &Path,
+    repo_relative_path: &str,
+) -> Result<bool> {
     ensure_jj_workspace(workspace_root)?;
     let (mut workspace, repo) = load_workspace_and_repo(workspace_root).await?;
     let snapshot_tree = snapshot_working_copy_tracked_only(&mut workspace, repo.op_id()).await?;

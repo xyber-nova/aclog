@@ -42,11 +42,9 @@ pub async fn run(
 
     let paths = AclogPaths::new(workspace)?;
     let config = crate::config::load_config(&paths)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
-    let record_index = load_record_index(&paths, deps).await?;
-    let changed_files = deps
-        .collect_changed_problem_files(&paths.workspace_root)
-        .await?;
+    deps.ensure_workspace().await?;
+    let record_index = load_record_index(deps).await?;
+    let changed_files = deps.detect_working_copy_changes().await?;
     info!(changed_files = changed_files.len(), "已收集变更文件");
     debug!(?changed_files, "变更文件详情");
 
@@ -91,8 +89,7 @@ pub async fn run(
 
     let commits = build_commits_from_session(&session, &paths, &config, deps).await?;
     if !commits.is_empty() {
-        deps.create_commits_for_files(&paths.workspace_root, &commits)
-            .await?;
+        deps.create_commits(&commits).await?;
     }
     delete_sync_session(&paths)?;
 

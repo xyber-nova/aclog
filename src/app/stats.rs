@@ -28,9 +28,9 @@ pub async fn run(
     info!("开始统计");
 
     let paths = AclogPaths::new(workspace)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    deps.ensure_workspace().await?;
     let config = crate::config::load_config(&paths)?;
-    let index = load_record_index(&paths, deps).await?;
+    let index = load_record_index(deps).await?;
     let records = index
         .all_records()
         .iter()

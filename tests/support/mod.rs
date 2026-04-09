@@ -8,7 +8,7 @@ use std::{
 };
 
 use aclog::{
-    app::deps::{OutputSink, ProblemProvider, RepoGateway},
+    app::deps::{JjRepository, OutputSink, ProblemProvider},
     config::{AclogPaths, AppConfig},
     domain::{
         browser::BrowserQuery,
@@ -32,7 +32,6 @@ pub struct FakeDeps {
     metadata_by_problem: Mutex<HashMap<String, Option<ProblemMetadata>>>,
     submissions_by_problem: Mutex<HashMap<String, Vec<SubmissionRecord>>>,
     algorithm_tag_names: Mutex<HashSet<String>>,
-    solve_messages: Mutex<Vec<String>>,
     commit_descriptions: Mutex<Vec<(String, String)>>,
     resolved_revsets: Mutex<HashMap<String, String>>,
     tracked_files: Mutex<HashSet<String>>,
@@ -63,10 +62,6 @@ impl FakeDeps {
     pub fn set_algorithm_tag_names(&self, names: &[&str]) {
         *self.algorithm_tag_names.lock().unwrap() =
             names.iter().map(|name| (*name).to_string()).collect();
-    }
-
-    pub fn set_solve_messages(&self, messages: Vec<String>) {
-        *self.solve_messages.lock().unwrap() = messages;
     }
 
     pub fn set_commit_descriptions(&self, entries: Vec<(String, String)>) {
@@ -137,46 +132,22 @@ impl ProblemProvider for FakeDeps {
     }
 }
 
-impl RepoGateway for FakeDeps {
-    async fn ensure_jj_workspace(&self, _workspace_root: &Path) -> Result<()> {
+impl JjRepository for FakeDeps {
+    async fn ensure_workspace(&self) -> Result<()> {
         Ok(())
     }
 
-    async fn collect_changed_problem_files(
-        &self,
-        _workspace_root: &Path,
-    ) -> Result<Vec<ProblemFileChange>> {
+    async fn detect_working_copy_changes(&self) -> Result<Vec<ProblemFileChange>> {
         Ok(self.changed_files.lock().unwrap().clone())
     }
 
-    async fn create_commits_for_files(
-        &self,
-        _workspace_root: &Path,
-        commits: &[(String, String)],
-    ) -> Result<()> {
-        self.created_commits
-            .lock()
-            .unwrap()
-            .extend(commits.iter().cloned());
-        Ok(())
+    async fn load_record_index(&self) -> Result<RecordIndex> {
+        let entries = self.commit_descriptions.lock().unwrap().clone();
+        let records = aclog::commit_format::parse_historical_solve_records(&entries);
+        Ok(RecordIndex::build(&records))
     }
 
-    async fn collect_solve_commit_messages(&self, _workspace_root: &Path) -> Result<Vec<String>> {
-        Ok(self.solve_messages.lock().unwrap().clone())
-    }
-
-    async fn collect_commit_descriptions(
-        &self,
-        _workspace_root: &Path,
-    ) -> Result<Vec<(String, String)>> {
-        Ok(self.commit_descriptions.lock().unwrap().clone())
-    }
-
-    async fn resolve_single_commit_id(
-        &self,
-        _workspace_root: &Path,
-        revset_str: &str,
-    ) -> Result<String> {
+    async fn resolve_revision(&self, revset_str: &str) -> Result<String> {
         self.resolved_revsets
             .lock()
             .unwrap()
@@ -185,11 +156,7 @@ impl RepoGateway for FakeDeps {
             .ok_or_else(|| eyre!("missing fake revision for `{revset_str}`"))
     }
 
-    async fn is_tracked_file(
-        &self,
-        _workspace_root: &Path,
-        repo_relative_path: &str,
-    ) -> Result<bool> {
+    async fn is_tracked_file(&self, repo_relative_path: &str) -> Result<bool> {
         Ok(self
             .tracked_files
             .lock()
@@ -197,16 +164,28 @@ impl RepoGateway for FakeDeps {
             .contains(repo_relative_path))
     }
 
-    async fn rewrite_commit_description(
-        &self,
-        _workspace_root: &Path,
-        revision: &str,
-        message: &str,
-    ) -> Result<()> {
+    async fn create_commits(&self, commits: &[(String, String)]) -> Result<()> {
+        self.created_commits
+            .lock()
+            .unwrap()
+            .extend(commits.iter().cloned());
+        let mut entries = self.commit_descriptions.lock().unwrap();
+        let base = entries.len();
+        for (index, (_file, message)) in commits.iter().enumerate() {
+            entries.push((format!("fake-created-{}", base + index), message.clone()));
+        }
+        Ok(())
+    }
+
+    async fn rewrite_commit_description(&self, revision: &str, message: &str) -> Result<()> {
         self.rewritten_descriptions
             .lock()
             .unwrap()
             .push((revision.to_string(), message.to_string()));
+        let mut entries = self.commit_descriptions.lock().unwrap();
+        if let Some(entry) = entries.iter_mut().find(|(candidate, _)| candidate == revision) {
+            entry.1 = message.to_string();
+        }
         Ok(())
     }
 }

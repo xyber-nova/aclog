@@ -21,16 +21,13 @@ pub fn render_output(records: &[crate::domain::record::FileRecordSummary]) -> St
 pub async fn run(workspace: PathBuf, query: &RecordListQuery, deps: &impl AppDeps) -> Result<()> {
     info!("开始列出已记录文件");
 
-    let paths = AclogPaths::new(workspace)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
-    let index = load_record_index(&paths, deps).await?;
+    AclogPaths::new(workspace)?;
+    deps.ensure_workspace().await?;
+    let index = load_record_index(deps).await?;
     let summaries = index.current_by_file().to_vec();
     let mut tracked_summaries = Vec::with_capacity(summaries.len());
     for summary in summaries {
-        if deps
-            .is_tracked_file(&paths.workspace_root, &summary.file_name)
-            .await?
-        {
+        if deps.is_tracked_file(&summary.file_name).await? {
             tracked_summaries.push(summary);
         }
     }

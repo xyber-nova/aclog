@@ -23,20 +23,16 @@ pub async fn run(
     info!("开始重绑记录");
 
     let paths = AclogPaths::new(workspace)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    deps.ensure_workspace().await?;
     let target = resolve_solution_file_target(&paths, &file, deps).await?;
     let selection_plan = rebind_selection_plan(record_rev.as_deref(), submission_id);
-    let history_entries = deps
-        .collect_commit_descriptions(&paths.workspace_root)
-        .await?;
-    let history_records = crate::commit_format::parse_historical_solve_records(&history_entries);
+    let index = super::support::load_record_index(deps).await?;
     let candidates = history_records_for_file(
-        &history_records,
+        index.all_records(),
         &target.repo_relative_path,
         &target.problem_id,
     );
     let selected_record = select_record_for_rebind(
-        &paths,
         &target,
         &candidates,
         record_rev.as_deref(),
@@ -67,7 +63,7 @@ pub async fn run(
         &record,
         &selected_record.record.training,
     );
-    deps.rewrite_commit_description(&paths.workspace_root, &selected_record.revision, &message)
+    deps.rewrite_commit_description(&selected_record.revision, &message)
         .await?;
 
     info!(

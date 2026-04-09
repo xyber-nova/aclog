@@ -24,9 +24,9 @@ pub async fn run(
     info!("开始查看记录详情");
 
     let paths = AclogPaths::new(workspace)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    deps.ensure_workspace().await?;
     let target = resolve_solution_file_target(&paths, &file, deps).await?;
-    let record = resolve_record_for_file(&paths, &target, record_rev.as_deref(), deps).await?;
+    let record = resolve_record_for_file(&target, record_rev.as_deref(), deps).await?;
     let output = if json {
         render_record_detail_json(&record)?
     } else {

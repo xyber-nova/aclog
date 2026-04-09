@@ -21,7 +21,7 @@ pub async fn run(
     info!("开始手工绑定记录");
 
     let paths = AclogPaths::new(workspace)?;
-    deps.ensure_jj_workspace(&paths.workspace_root).await?;
+    deps.ensure_workspace().await?;
     let target = resolve_solution_file_target(&paths, &file, deps).await?;
     let needs_submission_choice = submission_selection_plan(submission_id);
     let config = crate::config::load_config(&paths)?;
@@ -46,11 +46,8 @@ pub async fn run(
         metadata.as_ref(),
         &record,
     );
-    deps.create_commits_for_files(
-        &paths.workspace_root,
-        &[(target.repo_relative_path.clone(), message)],
-    )
-    .await?;
+    deps.create_commits(&[(target.repo_relative_path.clone(), message)])
+        .await?;
 
     info!(problem_id = target.problem_id, "手工绑定完成");
     Ok(())
