@@ -14,6 +14,7 @@ use crate::{
         training_fields::normalize_optional_training_text,
     },
     ui::interaction::UserInterface,
+    utils::{normalize_verdict, verdict_equals},
 };
 
 use super::deps::JjRepository;
@@ -253,7 +254,7 @@ pub(crate) fn filter_record_summaries(
                 && query
                     .verdict
                     .as_deref()
-                    .is_none_or(|verdict| record.verdict.eq_ignore_ascii_case(verdict))
+                    .is_none_or(|verdict| verdict_equals(&record.verdict, verdict))
                 && query
                     .difficulty
                     .as_deref()
@@ -272,7 +273,9 @@ pub(crate) fn render_record_list(records: &[FileRecordSummary]) -> String {
         return "当前工作区还没有已记录的解法文件\n".to_string();
     }
 
-    let mut lines = vec!["文件\t题号\t结果\t难度\t提交编号\t记录时间\t标题".to_string()];
+    let mut lines = vec![crate::output_style::header(
+        "文件\t题号\t结果\t难度\t提交编号\t记录时间\t标题",
+    )];
     for record in records {
         let submission_id = record
             .submission_id
@@ -286,7 +289,7 @@ pub(crate) fn render_record_list(records: &[FileRecordSummary]) -> String {
             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             record.file_name,
             record.problem_id,
-            record.verdict,
+            crate::output_style::verdict(&record.verdict),
             record.difficulty,
             submission_id,
             recorded_at,
@@ -300,7 +303,7 @@ pub(crate) fn render_record_list_json(records: &[FileRecordSummary]) -> Result<S
     Ok(format!("{}\n", serde_json::to_string_pretty(records)?))
 }
 
-pub(crate) fn render_record_detail(record: &HistoricalSolveRecord) -> String {
+fn render_record_detail_lines(record: &HistoricalSolveRecord) -> [String; 19] {
     let solve = &record.record;
     let submission_id = solve
         .submission_id
@@ -333,7 +336,7 @@ pub(crate) fn render_record_detail(record: &HistoricalSolveRecord) -> String {
         format!("题号: {}", solve.problem_id),
         format!("标题: {}", solve.title),
         format!("文件: {}", solve.file_name),
-        format!("结果: {}", solve.verdict),
+        format!("结果: {}", normalize_verdict(&solve.verdict)),
         format!("分数: {score}"),
         format!("耗时: {time_ms}"),
         format!("内存: {memory_mb}"),
@@ -361,7 +364,24 @@ pub(crate) fn render_record_detail(record: &HistoricalSolveRecord) -> String {
             solve.training.time_spent.as_deref().unwrap_or("-")
         ),
     ]
-    .join("\n")
+}
+
+pub(crate) fn render_record_detail_colored(record: &HistoricalSolveRecord) -> String {
+    render_record_detail_lines(record)
+        .into_iter()
+        .map(|line| {
+            let Some((label, value)) = line.split_once(' ') else {
+                return line;
+            };
+            let rendered_value = if label == "结果:" {
+                crate::output_style::verdict(value)
+            } else {
+                value.to_string()
+            };
+            format!("{} {}", crate::output_style::label(label), rendered_value)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
         + "\n"
 }
 

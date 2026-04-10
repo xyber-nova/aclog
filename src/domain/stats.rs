@@ -7,6 +7,7 @@ use crate::domain::{
     record::{FileRecordSummary, HistoricalSolveRecord, SolveRecord},
     record_index::RecordIndex,
 };
+use crate::utils::{is_ac_verdict, normalize_verdict};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatsSummary {
@@ -67,7 +68,7 @@ pub fn summarize_solve_records_with_window(
     let verdict_counts = build_count_distribution(
         activity_records
             .iter()
-            .map(|record| record.verdict.clone())
+            .map(|record| normalize_verdict(&record.verdict).into_owned())
             .collect::<Vec<_>>(),
     );
 
@@ -104,7 +105,7 @@ pub fn summarize_solve_records_with_window(
     let unique_problem_count = unique_records.len();
     let unique_ac_count = unique_records
         .iter()
-        .filter(|record| record.verdict.eq_ignore_ascii_case("AC"))
+        .filter(|record| is_ac_verdict(&record.verdict))
         .count();
     let unique_non_ac_count = unique_problem_count.saturating_sub(unique_ac_count);
     let first_ac_count = count_first_acs(records, &active_problem_ids, cutoff);
@@ -171,7 +172,7 @@ pub fn build_review_candidates(
                     label: problem_id.clone(),
                     problem_id: Some(problem_id.clone()),
                     title: Some(latest.title.clone()),
-                    verdict: Some(latest.verdict.clone()),
+                    verdict: Some(normalize_verdict(&latest.verdict).into_owned()),
                     last_submission_time: latest.submission_time,
                     reason: format!(
                         "距离上次练习已超过 {} 天",
@@ -183,14 +184,14 @@ pub fn build_review_candidates(
 
         let non_ac_attempts = history
             .iter()
-            .filter(|record| !record.verdict.eq_ignore_ascii_case("AC"))
+            .filter(|record| !is_ac_verdict(&record.verdict))
             .count();
-        if !latest.verdict.eq_ignore_ascii_case("AC")
+        if !is_ac_verdict(&latest.verdict)
             || non_ac_attempts >= 2
             || latest.training.mistakes.is_some()
         {
-            let reason = if !latest.verdict.eq_ignore_ascii_case("AC") {
-                format!("最近状态仍为 {}", latest.verdict)
+            let reason = if !is_ac_verdict(&latest.verdict) {
+                format!("最近状态仍为 {}", normalize_verdict(&latest.verdict))
             } else if non_ac_attempts >= 2 {
                 format!("历史里至少有 {} 次非 AC 尝试", non_ac_attempts)
             } else {
@@ -201,7 +202,7 @@ pub fn build_review_candidates(
                 label: problem_id.clone(),
                 problem_id: Some(problem_id.clone()),
                 title: Some(latest.title.clone()),
-                verdict: Some(latest.verdict.clone()),
+                verdict: Some(normalize_verdict(&latest.verdict).into_owned()),
                 last_submission_time: latest.submission_time,
                 reason,
             });
@@ -222,7 +223,7 @@ pub fn build_review_candidates(
         let filtered_tags = filter_algorithm_tags(&record.tags, algorithm_tag_names);
         for tag in filtered_tags {
             let mut score = 0;
-            if !record.verdict.eq_ignore_ascii_case("AC") {
+            if !is_ac_verdict(&record.verdict) {
                 score += 1;
             }
             if record
@@ -321,11 +322,7 @@ fn count_first_acs(
         .filter(|problem_id| {
             histories
                 .get(problem_id.as_str())
-                .and_then(|history| {
-                    history
-                        .iter()
-                        .find(|record| record.verdict.eq_ignore_ascii_case("AC"))
-                })
+                .and_then(|history| history.iter().find(|record| is_ac_verdict(&record.verdict)))
                 .is_some_and(|record| is_within_window(record, cutoff))
         })
         .count()

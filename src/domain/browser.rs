@@ -7,6 +7,7 @@ use crate::domain::{
     record::{HistoricalSolveRecord, ProblemRecordSummary},
     record_index::RecordIndex,
 };
+use crate::utils::{normalize_verdict, verdict_equals};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BrowserRootView {
@@ -26,6 +27,8 @@ pub struct BrowserQuery {
     pub days: Option<i64>,
     pub timeline_file: Option<String>,
     pub timeline_problem: Option<String>,
+    #[serde(default)]
+    pub return_to_caller_on_escape: bool,
     pub json: bool,
 }
 
@@ -86,7 +89,7 @@ pub fn build_browser_state(index: &RecordIndex) -> BrowserState {
             problem_id: item.problem_id.clone(),
             title: item.title.clone(),
             file_name: item.file_name.clone(),
-            verdict: item.verdict.clone(),
+            verdict: normalize_verdict(&item.verdict).into_owned(),
             difficulty: item.difficulty.clone(),
             tags: item.tags.clone(),
             submission_id: item.submission_id,
@@ -100,7 +103,7 @@ pub fn build_browser_state(index: &RecordIndex) -> BrowserState {
         .map(|item| BrowserProblemRow {
             problem_id: item.problem_id.clone(),
             title: item.title.clone(),
-            verdict: item.verdict.clone(),
+            verdict: normalize_verdict(&item.verdict).into_owned(),
             difficulty: item.difficulty.clone(),
             tags: item.tags.clone(),
             files: item.files.clone(),
@@ -215,7 +218,7 @@ fn to_timeline_row(record: &HistoricalSolveRecord) -> BrowserTimelineRow {
         problem_id: record.record.problem_id.clone(),
         title: record.record.title.clone(),
         file_name: record.record.file_name.clone(),
-        verdict: record.record.verdict.clone(),
+        verdict: normalize_verdict(&record.record.verdict).into_owned(),
         difficulty: record.record.difficulty.clone(),
         tags: record.record.tags.clone(),
         submission_id: record.record.submission_id,
@@ -266,7 +269,7 @@ fn matches_browser_row(
         && query
             .verdict
             .as_deref()
-            .is_none_or(|needle| verdict.eq_ignore_ascii_case(needle))
+            .is_none_or(|needle| verdict_equals(verdict, needle))
         && query
             .difficulty
             .as_deref()

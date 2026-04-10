@@ -19,7 +19,7 @@ use aclog::{
         submission::SubmissionRecord,
         sync_batch::{SyncBatchSession, SyncSessionChoice, SyncSessionItem},
     },
-    ui::interaction::UserInterface,
+    ui::interaction::{SyncBatchDetailAction, UserInterface},
     vcs::{ProblemFileChange, ProblemFileChangeKind},
 };
 use chrono::{FixedOffset, TimeZone};
@@ -183,7 +183,10 @@ impl JjRepository for FakeDeps {
             .unwrap()
             .push((revision.to_string(), message.to_string()));
         let mut entries = self.commit_descriptions.lock().unwrap();
-        if let Some(entry) = entries.iter_mut().find(|(candidate, _)| candidate == revision) {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|(candidate, _)| candidate == revision)
+        {
             entry.1 = message.to_string();
         }
         Ok(())
@@ -201,6 +204,7 @@ impl OutputSink for FakeDeps {
 pub struct FakeUi {
     pub sync_session_choice: Mutex<Option<SyncSessionChoice>>,
     pub sync_batch_review_selection: Mutex<Vec<Option<usize>>>,
+    pub sync_batch_detail_action: Mutex<Option<SyncBatchDetailAction>>,
     pub submission_selection: Mutex<Option<SyncSelection>>,
     pub record_submission_selection: Mutex<Option<Option<SubmissionRecord>>>,
     pub record_to_rebind_selection: Mutex<Option<Option<HistoricalSolveRecord>>>,
@@ -289,6 +293,19 @@ impl UserInterface for FakeUi {
             .unwrap()
             .clone()
             .ok_or_else(|| eyre!("unexpected select_sync_batch_action call"))
+    }
+
+    fn select_sync_batch_detail_action(
+        &self,
+        item: &SyncSessionItem,
+        metadata: Option<&ProblemMetadata>,
+        submissions: &[SubmissionRecord],
+    ) -> Result<SyncBatchDetailAction> {
+        if let Some(action) = self.sync_batch_detail_action.lock().unwrap().clone() {
+            return Ok(action);
+        }
+        self.select_sync_batch_action(item, metadata, submissions)
+            .map(SyncBatchDetailAction::Decide)
     }
 
     fn select_submission(

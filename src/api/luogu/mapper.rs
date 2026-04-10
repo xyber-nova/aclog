@@ -6,6 +6,7 @@ use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use serde_json::Value;
 
 use crate::domain::submission::SubmissionRecord;
+use crate::utils::normalize_verdict;
 
 use super::{
     LuoguConfigResponse, LuoguMappingsCache, LuoguRecordStatus, LuoguTagCacheEntry,
@@ -94,7 +95,7 @@ pub fn parse_verdict(value: &Value, mappings: Option<&LuoguMappingsCache>) -> St
     .filter(|item| !item.is_empty());
 
     if let Some(text) = text {
-        return text.to_string();
+        return normalize_verdict(text).into_owned();
     }
 
     let code = [
@@ -209,9 +210,9 @@ fn map_record_status(code: i64, mappings: Option<&LuoguMappingsCache>) -> String
 
 fn preferred_status_name(entry: &LuoguRecordStatus) -> String {
     if !entry.short_name.trim().is_empty() {
-        return entry.short_name.trim().to_string();
+        return normalize_verdict(entry.short_name.trim()).into_owned();
     }
-    entry.name.trim().to_string()
+    normalize_verdict(entry.name.trim()).into_owned()
 }
 
 fn parse_submitter(value: &Value) -> Option<String> {
@@ -377,7 +378,7 @@ mod tests {
             problem_difficulty: HashMap::new(),
         };
         let record = parse_submission_record(&value, "fallback-user", Some(&mappings)).unwrap();
-        assert_eq!(record.verdict, "Unaccepted");
+        assert_eq!(record.verdict, "WA");
     }
 
     #[test]

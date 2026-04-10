@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum SyncSessionChoice {
     Resume,
     Rebuild,
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

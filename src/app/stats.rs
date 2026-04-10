@@ -93,7 +93,10 @@ fn render_review_candidates(candidates: &[crate::domain::stats::ReviewCandidate]
             "{}\t{}\t{}\t{}",
             review_kind_label(&item.kind),
             item.label,
-            item.verdict.as_deref().unwrap_or("-"),
+            item.verdict
+                .as_deref()
+                .map(|value| crate::utils::normalize_verdict(value).into_owned())
+                .unwrap_or_else(|| "-".to_string()),
             item.reason
         ));
     }

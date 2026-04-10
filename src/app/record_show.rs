@@ -8,7 +8,7 @@ use crate::config::AclogPaths;
 use super::{
     deps::AppDeps,
     support::{
-        render_record_detail, render_record_detail_json, resolve_record_for_file,
+        render_record_detail_colored, render_record_detail_json, resolve_record_for_file,
         resolve_solution_file_target,
     },
 };
@@ -30,7 +30,7 @@ pub async fn run(
     let output = if json {
         render_record_detail_json(&record)?
     } else {
-        render_record_detail(&record)
+        render_record_detail_colored(&record)
     };
     deps.write_output(&output)?;
 

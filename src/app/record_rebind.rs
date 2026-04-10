@@ -32,14 +32,8 @@ pub async fn run(
         &target.repo_relative_path,
         &target.problem_id,
     );
-    let selected_record = select_record_for_rebind(
-        &target,
-        &candidates,
-        record_rev.as_deref(),
-        deps,
-        ui,
-    )
-    .await?;
+    let selected_record =
+        select_record_for_rebind(&target, &candidates, record_rev.as_deref(), deps, ui).await?;
 
     let config = crate::config::load_config(&paths)?;
     let metadata = deps

@@ -16,13 +16,24 @@ use crate::{
             SyncStoredDecision, SyncWarning, SyncWarningCode,
         },
     },
-    ui::interaction::UserInterface,
+    ui::interaction::{SyncBatchDetailAction, SyncBatchReviewAction, UserInterface},
 };
 
 use super::{
     deps::AppDeps,
     support::{load_record_index, planned_commit},
 };
+
+enum PreparedSyncSession {
+    Ready(SyncBatchSession),
+    Quit,
+}
+
+enum ProcessSessionItemOutcome {
+    Updated,
+    Back,
+    Quit,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncOptions {
@@ -56,7 +67,12 @@ pub async fn run(
         return Ok(());
     }
 
-    let mut session = load_or_prepare_session(&paths, options, fresh_session, ui)?;
+    let PreparedSyncSession::Ready(mut session) =
+        load_or_prepare_session(&paths, options, fresh_session, ui)?
+    else {
+        info!("已退出 sync 恢复界面，保留现有批次状态");
+        return Ok(());
+    };
     save_sync_session(&paths, &session)?;
 
     while session
@@ -64,27 +80,51 @@ pub async fn run(
         .iter()
         .any(|item| item.status == SyncItemStatus::Pending)
     {
-        let Some(index) = ui.review_sync_batch(&paths.workspace_root, &session)? else {
-            save_sync_session(&paths, &session)?;
-            info!("已保留未完成同步批次，后续可恢复");
-            return Ok(());
-        };
-        if index >= session.items.len() {
-            continue;
+        match ui.review_sync_batch_action(&paths.workspace_root, &session)? {
+            SyncBatchReviewAction::Pause => {
+                save_sync_session(&paths, &session)?;
+                info!("已保留未完成同步批次，后续可恢复");
+                return Ok(());
+            }
+            SyncBatchReviewAction::Open(index) => {
+                if index >= session.items.len() {
+                    continue;
+                }
+                if session.items[index].status != SyncItemStatus::Pending {
+                    continue;
+                }
+                match process_session_item(
+                    &mut session.items[index],
+                    &paths,
+                    &config,
+                    deps,
+                    ui,
+                    &record_index,
+                )
+                .await?
+                {
+                    ProcessSessionItemOutcome::Updated => {
+                        save_sync_session(&paths, &session)?;
+                    }
+                    ProcessSessionItemOutcome::Back => {}
+                    ProcessSessionItemOutcome::Quit => {
+                        save_sync_session(&paths, &session)?;
+                        info!("已退出 sync 详情页，保留未完成批次以便恢复");
+                        return Ok(());
+                    }
+                }
+            }
+            SyncBatchReviewAction::Decide { index, selection } => {
+                if index >= session.items.len() {
+                    continue;
+                }
+                if session.items[index].status != SyncItemStatus::Pending {
+                    continue;
+                }
+                apply_selection(&mut session.items[index], selection, &record_index)?;
+                save_sync_session(&paths, &session)?;
+            }
         }
-        if session.items[index].status != SyncItemStatus::Pending {
-            continue;
-        }
-        process_session_item(
-            &mut session.items[index],
-            &paths,
-            &config,
-            deps,
-            ui,
-            &record_index,
-        )
-        .await?;
-        save_sync_session(&paths, &session)?;
     }
 
     let commits = build_commits_from_session(&session, &paths, &config, deps).await?;
@@ -149,7 +189,7 @@ fn load_or_prepare_session(
     options: SyncOptions,
     fresh_session: SyncBatchSession,
     ui: &impl UserInterface,
-) -> Result<SyncBatchSession> {
+) -> Result<PreparedSyncSession> {
     let existing = load_sync_session(paths)?;
     match existing {
         Some(existing) if !options.rebuild => {
@@ -159,13 +199,17 @@ fn load_or_prepare_session(
                 ui.choose_sync_session_action(&paths.workspace_root, &existing)?
             };
             match choice {
-                SyncSessionChoice::Resume => Ok(merge_sync_sessions(fresh_session, existing)),
-                SyncSessionChoice::Rebuild => Ok(fresh_session),
+                SyncSessionChoice::Resume => Ok(PreparedSyncSession::Ready(merge_sync_sessions(
+                    fresh_session,
+                    existing,
+                ))),
+                SyncSessionChoice::Rebuild => Ok(PreparedSyncSession::Ready(fresh_session)),
+                SyncSessionChoice::Quit => Ok(PreparedSyncSession::Quit),
             }
         }
-        Some(_) => Ok(fresh_session),
+        Some(_) => Ok(PreparedSyncSession::Ready(fresh_session)),
         None if options.resume => Err(eyre!("当前没有可恢复的 sync 批次")),
-        None => Ok(fresh_session),
+        None => Ok(PreparedSyncSession::Ready(fresh_session)),
     }
 }
 
@@ -214,7 +258,7 @@ async fn process_session_item(
     deps: &impl AppDeps,
     ui: &impl UserInterface,
     index: &crate::domain::record_index::RecordIndex,
-) -> Result<()> {
+) -> Result<ProcessSessionItemOutcome> {
     let metadata = match item.problem_id.as_deref() {
         Some(problem_id) => {
             deps.resolve_problem_metadata(config, paths, problem_id)
@@ -235,63 +279,78 @@ async fn process_session_item(
     };
 
     loop {
-        let selection = ui.select_sync_batch_action(item, metadata.as_ref(), &submissions)?;
-        match selection {
-            SyncSelection::Submission(record) => {
-                if let Some(problem_id) = record.problem_id.as_deref() {
-                    if Some(problem_id) != item.problem_id.as_deref() {
-                        item.warnings.push(SyncWarning {
-                            code: SyncWarningCode::SubmissionProblemMismatch,
-                            message: format!(
-                                "选择的 submission 题号为 {problem_id}，与文件题号 {} 不一致",
-                                item.problem_id.as_deref().unwrap_or("-")
-                            ),
-                        });
-                        continue;
-                    }
+        match ui.select_sync_batch_detail_action(item, metadata.as_ref(), &submissions)? {
+            SyncBatchDetailAction::Back => return Ok(ProcessSessionItemOutcome::Back),
+            SyncBatchDetailAction::Decide(selection) => {
+                if apply_selection(item, selection, index)? {
+                    return Ok(ProcessSessionItemOutcome::Updated);
                 }
+            }
+            SyncBatchDetailAction::Quit => return Ok(ProcessSessionItemOutcome::Quit),
+        }
+    }
+}
 
-                let duplicate = index
-                    .timeline_for_file(&item.file)
-                    .first()
-                    .and_then(|record| record.record.submission_id)
-                    .is_some_and(|submission_id| submission_id == record.submission_id);
-                let already_warned = item
-                    .warnings
-                    .iter()
-                    .any(|warning| warning.code == SyncWarningCode::DuplicateSubmission);
-                if duplicate && !already_warned {
+fn apply_selection(
+    item: &mut SyncSessionItem,
+    selection: SyncSelection,
+    index: &crate::domain::record_index::RecordIndex,
+) -> Result<bool> {
+    match selection {
+        SyncSelection::Submission(record) => {
+            if let Some(problem_id) = record.problem_id.as_deref() {
+                if Some(problem_id) != item.problem_id.as_deref() {
                     item.warnings.push(SyncWarning {
-                        code: SyncWarningCode::DuplicateSubmission,
+                        code: SyncWarningCode::SubmissionProblemMismatch,
                         message: format!(
-                            "文件 {} 的最新记录已绑定 submission {}；再次选择同一 submission 需要再次确认",
-                            item.file, record.submission_id
+                            "选择的 submission 题号为 {problem_id}，与文件题号 {} 不一致",
+                            item.problem_id.as_deref().unwrap_or("-")
                         ),
                     });
-                    continue;
+                    return Ok(false);
                 }
+            }
 
-                item.status = SyncItemStatus::Planned;
-                item.decision = Some(SyncStoredDecision::Submission {
-                    submission_id: record.submission_id,
+            let duplicate = index
+                .timeline_for_file(&item.file)
+                .first()
+                .and_then(|record| record.record.submission_id)
+                .is_some_and(|submission_id| submission_id == record.submission_id);
+            let already_warned = item
+                .warnings
+                .iter()
+                .any(|warning| warning.code == SyncWarningCode::DuplicateSubmission);
+            if duplicate && !already_warned {
+                item.warnings.push(SyncWarning {
+                    code: SyncWarningCode::DuplicateSubmission,
+                    message: format!(
+                        "文件 {} 的最新记录已绑定 submission {}；再次选择同一 submission 需要再次确认",
+                        item.file, record.submission_id
+                    ),
                 });
-                return Ok(());
+                return Ok(false);
             }
-            SyncSelection::Chore => {
-                item.status = SyncItemStatus::Planned;
-                item.decision = Some(SyncStoredDecision::Chore);
-                return Ok(());
-            }
-            SyncSelection::Delete => {
-                item.status = SyncItemStatus::Planned;
-                item.decision = Some(SyncStoredDecision::Delete);
-                return Ok(());
-            }
-            SyncSelection::Skip => {
-                item.status = SyncItemStatus::Skipped;
-                item.decision = Some(SyncStoredDecision::Skip);
-                return Ok(());
-            }
+
+            item.status = SyncItemStatus::Planned;
+            item.decision = Some(SyncStoredDecision::Submission {
+                submission_id: record.submission_id,
+            });
+            Ok(true)
+        }
+        SyncSelection::Chore => {
+            item.status = SyncItemStatus::Planned;
+            item.decision = Some(SyncStoredDecision::Chore);
+            Ok(true)
+        }
+        SyncSelection::Delete => {
+            item.status = SyncItemStatus::Planned;
+            item.decision = Some(SyncStoredDecision::Delete);
+            Ok(true)
+        }
+        SyncSelection::Skip => {
+            item.status = SyncItemStatus::Skipped;
+            item.decision = Some(SyncStoredDecision::Skip);
+            Ok(true)
         }
     }
 }
@@ -415,7 +474,9 @@ fn render_sync_preview(session: &SyncBatchSession) -> String {
         return "当前没有待处理的题目文件变更\n".to_string();
     }
 
-    let mut lines = vec!["文件\t题号\t变更类型\t当前状态\t提交记录数\t默认候选\t告警".to_string()];
+    let mut lines = vec![crate::output_style::header(
+        "文件\t题号\t变更类型\t当前状态\t提交记录数\t默认候选\t告警",
+    )];
     for row in &session.items {
         let submissions = row
             .submissions
@@ -440,23 +501,21 @@ fn render_sync_preview(session: &SyncBatchSession) -> String {
             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             row.file,
             row.problem_id.as_deref().unwrap_or("-"),
-            preview_kind(row.kind),
-            preview_status(row),
+            crate::output_style::sync_change_kind(row.kind),
+            crate::output_style::sync_status(row),
             submissions,
             default_submission,
-            warnings
+            if warnings == "-" {
+                crate::output_style::muted(&warnings)
+            } else {
+                crate::output_style::warning(&warnings)
+            }
         ));
     }
     format!("{}\n", lines.join("\n"))
 }
 
-fn preview_kind(kind: SyncChangeKind) -> &'static str {
-    match kind {
-        SyncChangeKind::Active => "已修改",
-        SyncChangeKind::Deleted => "已删除",
-    }
-}
-
+#[cfg(test)]
 fn preview_status(item: &SyncSessionItem) -> &'static str {
     match item.status {
         SyncItemStatus::Pending => match item.kind {

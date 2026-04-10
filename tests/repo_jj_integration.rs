@@ -122,7 +122,9 @@ impl JjRepository for RealRepoOutputDeps {
     }
 
     async fn rewrite_commit_description(&self, revision: &str, message: &str) -> Result<()> {
-        self.live.rewrite_commit_description(revision, message).await
+        self.live
+            .rewrite_commit_description(revision, message)
+            .await
     }
 }
 
@@ -153,11 +155,11 @@ async fn real_jj_commit_creation_tracking_and_rewrite_are_observable() {
     let repo = JjRepoActorHandle::for_workspace(workspace.path().to_path_buf());
 
     repo.create_commits(&[(
-            "P1002.cpp".to_string(),
-            "solve(P1002): Original\n\nSubmission-ID: 1\nFile: P1002.cpp".to_string(),
-        )])
-        .await
-        .unwrap();
+        "P1002.cpp".to_string(),
+        "solve(P1002): Original\n\nSubmission-ID: 1\nFile: P1002.cpp".to_string(),
+    )])
+    .await
+    .unwrap();
 
     assert!(repo.is_tracked_file("P1002.cpp").await.unwrap());
 
@@ -211,11 +213,11 @@ async fn real_jj_record_edit_rewrites_training_notes() {
 
     let repo = JjRepoActorHandle::for_workspace(workspace.path().to_path_buf());
     repo.create_commits(&[(
-            "P1004.cpp".to_string(),
-            "solve(P1004): Original\n\nVerdict: WA\nSubmission-ID: 1\nFile: P1004.cpp".to_string(),
-        )])
-        .await
-        .unwrap();
+        "P1004.cpp".to_string(),
+        "solve(P1004): Original\n\nVerdict: WA\nSubmission-ID: 1\nFile: P1004.cpp".to_string(),
+    )])
+    .await
+    .unwrap();
 
     let deps = RealRepoOutputDeps::new(workspace.path());
     run_record_edit_with(

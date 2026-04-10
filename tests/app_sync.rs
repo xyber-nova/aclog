@@ -4,6 +4,7 @@ use aclog::{
     app::{SyncOptions, run_sync_with_full_options, run_sync_with_options},
     commit_format::build_solve_commit_message,
     domain::record::SyncSelection,
+    ui::interaction::SyncBatchDetailAction,
 };
 
 use support::{
@@ -163,6 +164,77 @@ async fn sync_resume_uses_saved_session_and_clears_it_after_commit() {
 
     assert_eq!(deps.created_commits().len(), 1);
     assert!(!workspace.path().join(".aclog/sync-session.toml").exists());
+}
+
+#[tokio::test]
+async fn sync_quit_from_resume_prompt_preserves_saved_session() {
+    let workspace = workspace_with_config();
+    let deps = FakeDeps::default();
+    deps.set_changed_files(vec![active_change("P2100.cpp")]);
+    deps.insert_metadata("P2100", Some(sample_metadata("P2100")));
+    deps.insert_submissions("P2100", vec![sample_submission(90, "AC")]);
+
+    std::fs::write(
+        workspace.path().join(".aclog/sync-session.toml"),
+        r#"
+created_at = "2024-01-01T00:00:00+08:00"
+
+[[items]]
+file = "P2100.cpp"
+problem_id = "P2100"
+kind = "Active"
+status = "Pending"
+submissions = 1
+default_submission_id = 90
+warnings = []
+"#,
+    )
+    .unwrap();
+
+    let ui = FakeUi {
+        sync_session_choice: std::sync::Mutex::new(Some(
+            aclog::domain::sync_batch::SyncSessionChoice::Quit,
+        )),
+        ..FakeUi::default()
+    };
+
+    run_sync_with_full_options(
+        workspace.path().to_path_buf(),
+        SyncOptions::default(),
+        &deps,
+        &ui,
+    )
+    .await
+    .unwrap();
+
+    assert!(workspace.path().join(".aclog/sync-session.toml").exists());
+    assert!(deps.created_commits().is_empty());
+}
+
+#[tokio::test]
+async fn sync_quit_from_detail_preserves_saved_session() {
+    let workspace = workspace_with_config();
+    let deps = FakeDeps::default();
+    deps.set_changed_files(vec![active_change("P2101.cpp")]);
+    deps.insert_metadata("P2101", Some(sample_metadata("P2101")));
+    deps.insert_submissions("P2101", vec![sample_submission(91, "WA")]);
+
+    let ui = FakeUi {
+        sync_batch_detail_action: std::sync::Mutex::new(Some(SyncBatchDetailAction::Quit)),
+        ..FakeUi::default()
+    };
+
+    run_sync_with_full_options(
+        workspace.path().to_path_buf(),
+        SyncOptions::default(),
+        &deps,
+        &ui,
+    )
+    .await
+    .unwrap();
+
+    assert!(workspace.path().join(".aclog/sync-session.toml").exists());
+    assert!(deps.created_commits().is_empty());
 }
 
 #[tokio::test]
