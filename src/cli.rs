@@ -17,7 +17,7 @@ use color_eyre::Result;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -213,7 +213,10 @@ pub async fn run() -> Result<()> {
     run_command(cli.command).await
 }
 
-async fn run_command(command: Commands) -> Result<()> {
+async fn run_command(command: Option<Commands>) -> Result<()> {
+    let Some(command) = command else {
+        return crate::app::run_home(PathBuf::from(".")).await;
+    };
     match command {
         Commands::Init { workspace } => crate::app::run_init(workspace).await,
         Commands::Sync {
@@ -360,10 +363,17 @@ mod tests {
     use super::{BrowserViewArg, Cli, Commands, RecordCommands};
 
     #[test]
+    fn cli_parses_no_subcommand_as_home_entry() {
+        let cli = Cli::parse_from(["aclog"]);
+
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
     fn cli_parses_stats_subcommand_with_default_workspace() {
         let cli = Cli::parse_from(["aclog", "stats"]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Stats { workspace, .. } => assert_eq!(workspace, PathBuf::from(".")),
             command => panic!("unexpected command: {command:?}"),
         }
@@ -373,7 +383,7 @@ mod tests {
     fn cli_parses_stats_review_flags() {
         let cli = Cli::parse_from(["aclog", "stats", "--days", "14", "--review", "--json"]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Stats {
                 days, review, json, ..
             } => {
@@ -389,7 +399,7 @@ mod tests {
     fn cli_parses_sync_recovery_flags() {
         let cli = Cli::parse_from(["aclog", "sync", "--resume", "--dry-run"]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Sync {
                 dry_run,
                 resume,
@@ -415,7 +425,7 @@ mod tests {
             "42",
         ]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Record {
                 command:
                     RecordCommands::Bind {
@@ -445,7 +455,7 @@ mod tests {
             "42",
         ]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Record {
                 command:
                     RecordCommands::Rebind {
@@ -470,7 +480,7 @@ mod tests {
             "aclog", "record", "browse", "--view", "problems", "--tag", "模拟", "--days", "14",
         ]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Record {
                 command:
                     RecordCommands::Browse {
@@ -489,7 +499,7 @@ mod tests {
     fn cli_parses_record_list_with_default_workspace() {
         let cli = Cli::parse_from(["aclog", "record", "list"]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Record {
                 command: RecordCommands::List { workspace, .. },
             } => assert_eq!(workspace, PathBuf::from(".")),
@@ -509,7 +519,7 @@ mod tests {
             "--json",
         ]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Record {
                 command:
                     RecordCommands::Show {
@@ -541,7 +551,7 @@ mod tests {
             "medium",
         ]);
 
-        match cli.command {
+        match cli.command.expect("subcommand should parse") {
             Commands::Record {
                 command:
                     RecordCommands::Edit {

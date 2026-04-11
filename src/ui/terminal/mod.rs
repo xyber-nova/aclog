@@ -12,6 +12,7 @@
 
 mod browser;
 mod common;
+mod home;
 mod selector;
 mod stats;
 mod sync;
@@ -36,11 +37,16 @@ use crate::{
         submission::SubmissionRecord,
         sync_batch::{SyncBatchSession, SyncSessionChoice, SyncSessionItem},
     },
-    ui::interaction::{SyncBatchDetailAction, SyncBatchReviewAction},
+    ui::interaction::{HomeAction, HomeSummary, SyncBatchDetailAction, SyncBatchReviewAction},
 };
 
 /// 真实终端句柄类型别名，供各页面模块共享。
 pub(crate) type TerminalHandle = Terminal<CrosstermBackend<Stdout>>;
+
+/// 打开 submission 选择器，返回 sync workflow 需要的决策结果。
+pub fn open_home(workspace_root: &std::path::Path, summary: &HomeSummary) -> Result<HomeAction> {
+    run_in_terminal(|terminal| home::run_home_app(terminal, workspace_root, summary))
+}
 
 /// 打开 submission 选择器，返回 sync workflow 需要的决策结果。
 pub fn select_submission(

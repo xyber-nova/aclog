@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use chrono::{DateTime, FixedOffset};
 use color_eyre::Result;
 
 use crate::domain::{
@@ -16,6 +17,64 @@ use crate::domain::{
     submission::SubmissionRecord,
     sync_batch::{SyncBatchSession, SyncSessionChoice, SyncSessionItem},
 };
+use crate::problem::ProblemProvider;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeAction {
+    StartSync,
+    ResumeSync,
+    OpenStats,
+    OpenBrowserFiles,
+    OpenBrowserProblems,
+    Exit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeProviderSummary {
+    pub provider: ProblemProvider,
+    pub total_solve_records: usize,
+    pub unique_problem_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeLatestRecordSummary {
+    pub problem_id: String,
+    pub provider: ProblemProvider,
+    pub title: String,
+    pub file_name: String,
+    pub verdict: String,
+    pub submission_time: Option<DateTime<FixedOffset>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeRecordListRow {
+    pub file_name: String,
+    pub problem_id: String,
+    pub verdict: String,
+    pub difficulty: String,
+    pub submission_id: Option<u64>,
+    pub submission_time: Option<DateTime<FixedOffset>>,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeSyncSessionSummary {
+    pub created_at: DateTime<FixedOffset>,
+    pub total_items: usize,
+    pub pending_items: usize,
+    pub decided_items: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeSummary {
+    pub total_solve_records: usize,
+    pub unique_problem_count: usize,
+    pub tracked_record_count: usize,
+    pub provider_summaries: Vec<HomeProviderSummary>,
+    pub latest_record: Option<HomeLatestRecordSummary>,
+    pub sync_session: Option<HomeSyncSessionSummary>,
+    pub record_rows: Vec<HomeRecordListRow>,
+}
 
 #[derive(Debug, Clone)]
 pub enum SyncBatchReviewAction {
@@ -46,6 +105,8 @@ pub enum SyncBatchDetailAction {
 /// - 负责把已经准备好的候选集合展示给用户，并返回选择结果
 /// - 不负责访问 API、读取仓库、修改仓库、或隐式补齐业务判断
 pub trait UserInterface {
+    fn open_home(&self, workspace_root: &Path, summary: &HomeSummary) -> Result<HomeAction>;
+
     fn choose_sync_session_action(
         &self,
         workspace_root: &Path,
@@ -136,6 +197,10 @@ pub trait UserInterface {
 pub struct TerminalUi;
 
 impl UserInterface for TerminalUi {
+    fn open_home(&self, workspace_root: &Path, summary: &HomeSummary) -> Result<HomeAction> {
+        crate::ui::terminal::open_home(workspace_root, summary)
+    }
+
     fn choose_sync_session_action(
         &self,
         workspace_root: &Path,

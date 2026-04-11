@@ -1,6 +1,7 @@
 pub mod deps;
 
 mod browser;
+mod home;
 mod init;
 mod record_bind;
 mod record_edit;
@@ -26,6 +27,11 @@ pub use crate::domain::browser::{BrowserProviderView, BrowserQuery, BrowserRootV
 
 pub async fn run_init(workspace: PathBuf) -> Result<()> {
     init::run(workspace).await
+}
+
+pub async fn run_home(workspace: PathBuf) -> Result<()> {
+    let deps = LiveDeps::new(workspace.clone());
+    home::run(workspace, &deps, &TerminalUi).await
 }
 
 pub async fn run_sync(workspace: PathBuf, options: SyncOptions) -> Result<()> {
@@ -109,6 +115,17 @@ where
     D: deps::AppDeps,
 {
     sync::run(workspace, SyncOptions::default(), deps, ui).await
+}
+
+pub async fn run_home_with<D>(
+    workspace: PathBuf,
+    deps: &D,
+    ui: &impl crate::ui::interaction::UserInterface,
+) -> Result<()>
+where
+    D: deps::AppDeps,
+{
+    home::run(workspace, deps, ui).await
 }
 
 pub async fn run_sync_with_options<D>(

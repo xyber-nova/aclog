@@ -22,7 +22,7 @@ use aclog::{
         submission::SubmissionRecord,
         sync_batch::{SyncBatchSession, SyncSessionChoice, SyncSessionItem},
     },
-    ui::interaction::{SyncBatchDetailAction, UserInterface},
+    ui::interaction::{HomeAction, HomeSummary, SyncBatchDetailAction, UserInterface},
     vcs::{ProblemFileChange, ProblemFileChangeKind},
 };
 use chrono::{FixedOffset, TimeZone};
@@ -256,6 +256,8 @@ impl OutputSink for FakeDeps {
 
 #[derive(Default)]
 pub struct FakeUi {
+    pub home_actions: Mutex<Vec<HomeAction>>,
+    pub shown_home_summaries: Mutex<Vec<HomeSummary>>,
     pub sync_session_choice: Mutex<Option<SyncSessionChoice>>,
     pub sync_batch_review_selection: Mutex<Vec<Option<usize>>>,
     pub sync_batch_detail_action: Mutex<Option<SyncBatchDetailAction>>,
@@ -272,6 +274,13 @@ pub struct FakeUi {
 }
 
 impl FakeUi {
+    pub fn with_home_actions(actions: Vec<HomeAction>) -> Self {
+        Self {
+            home_actions: Mutex::new(actions),
+            ..Self::default()
+        }
+    }
+
     pub fn with_submission_selection(selection: SyncSelection) -> Self {
         Self {
             submission_selection: Mutex::new(Some(selection)),
@@ -302,6 +311,18 @@ impl FakeUi {
 }
 
 impl UserInterface for FakeUi {
+    fn open_home(&self, _workspace_root: &Path, summary: &HomeSummary) -> Result<HomeAction> {
+        self.shown_home_summaries
+            .lock()
+            .unwrap()
+            .push(summary.clone());
+        let mut actions = self.home_actions.lock().unwrap();
+        if actions.is_empty() {
+            return Ok(HomeAction::Exit);
+        }
+        Ok(actions.remove(0))
+    }
+
     fn choose_sync_session_action(
         &self,
         _workspace_root: &Path,
