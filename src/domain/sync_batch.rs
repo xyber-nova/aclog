@@ -1,6 +1,8 @@
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
+use crate::problem::ProblemProvider;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SyncSessionChoice {
     Resume,
@@ -48,6 +50,10 @@ pub struct SyncWarning {
 pub struct SyncSessionItem {
     pub file: String,
     pub problem_id: Option<String>,
+    #[serde(default)]
+    pub provider: ProblemProvider,
+    #[serde(default)]
+    pub contest: Option<String>,
     pub kind: SyncChangeKind,
     pub status: SyncItemStatus,
     pub submissions: Option<usize>,

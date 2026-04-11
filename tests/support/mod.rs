@@ -4,7 +4,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use aclog::{
@@ -31,6 +34,10 @@ pub struct FakeDeps {
     changed_files: Mutex<Vec<ProblemFileChange>>,
     metadata_by_problem: Mutex<HashMap<String, Option<ProblemMetadata>>>,
     submissions_by_problem: Mutex<HashMap<String, Vec<SubmissionRecord>>>,
+    submission_fetch_counts: Mutex<HashMap<String, usize>>,
+    submission_fetch_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    submission_fetch_in_flight: AtomicUsize,
+    submission_fetch_max_in_flight: AtomicUsize,
     algorithm_tag_names: Mutex<HashSet<String>>,
     commit_descriptions: Mutex<Vec<(String, String)>>,
     resolved_revsets: Mutex<HashMap<String, String>>,
@@ -64,6 +71,11 @@ impl FakeDeps {
             names.iter().map(|name| (*name).to_string()).collect();
     }
 
+    pub fn configure_submission_fetch_barrier(&self, parties: usize) {
+        *self.submission_fetch_barrier.lock().unwrap() =
+            Some(Arc::new(tokio::sync::Barrier::new(parties)));
+    }
+
     pub fn set_commit_descriptions(&self, entries: Vec<(String, String)>) {
         *self.commit_descriptions.lock().unwrap() = entries;
     }
@@ -90,6 +102,19 @@ impl FakeDeps {
     pub fn outputs(&self) -> Vec<String> {
         self.outputs.lock().unwrap().clone()
     }
+
+    pub fn submission_fetch_count(&self, problem_id: &str) -> usize {
+        self.submission_fetch_counts
+            .lock()
+            .unwrap()
+            .get(problem_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn max_submission_fetch_in_flight(&self) -> usize {
+        self.submission_fetch_max_in_flight.load(Ordering::SeqCst)
+    }
 }
 
 impl ProblemProvider for FakeDeps {
@@ -114,6 +139,34 @@ impl ProblemProvider for FakeDeps {
         _paths: &AclogPaths,
         problem_id: &str,
     ) -> Result<Vec<SubmissionRecord>> {
+        {
+            let mut counts = self.submission_fetch_counts.lock().unwrap();
+            *counts.entry(problem_id.to_string()).or_default() += 1;
+        }
+        let in_flight = self
+            .submission_fetch_in_flight
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        let mut observed_max = self.submission_fetch_max_in_flight.load(Ordering::SeqCst);
+        while in_flight > observed_max {
+            match self.submission_fetch_max_in_flight.compare_exchange(
+                observed_max,
+                in_flight,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(current) => observed_max = current,
+            }
+        }
+        let barrier = self.submission_fetch_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        } else {
+            tokio::task::yield_now().await;
+        }
+        self.submission_fetch_in_flight
+            .fetch_sub(1, Ordering::SeqCst);
         Ok(self
             .submissions_by_problem
             .lock()
@@ -127,6 +180,7 @@ impl ProblemProvider for FakeDeps {
         &self,
         _config: &AppConfig,
         _paths: &AclogPaths,
+        _provider: aclog::problem::ProblemProvider,
     ) -> Result<HashSet<String>> {
         Ok(self.algorithm_tag_names.lock().unwrap().clone())
     }
@@ -209,6 +263,9 @@ pub struct FakeUi {
     pub record_submission_selection: Mutex<Option<Option<SubmissionRecord>>>,
     pub record_to_rebind_selection: Mutex<Option<Option<HistoricalSolveRecord>>>,
     pub delete_confirmation: Mutex<Option<SyncSelection>>,
+    pub submission_requests: Mutex<Vec<(String, Option<ProblemMetadata>, Vec<SubmissionRecord>)>>,
+    pub record_submission_requests:
+        Mutex<Vec<(String, Option<ProblemMetadata>, Vec<SubmissionRecord>)>>,
     pub shown_stats: Mutex<Vec<StatsSummary>>,
     pub shown_dashboards: Mutex<Vec<StatsDashboard>>,
     pub opened_browsers: Mutex<Vec<BrowserQuery>>,
@@ -310,10 +367,15 @@ impl UserInterface for FakeUi {
 
     fn select_submission(
         &self,
-        _problem_id: &str,
-        _metadata: Option<&ProblemMetadata>,
-        _submissions: &[SubmissionRecord],
+        problem_id: &str,
+        metadata: Option<&ProblemMetadata>,
+        submissions: &[SubmissionRecord],
     ) -> Result<SyncSelection> {
+        self.submission_requests.lock().unwrap().push((
+            problem_id.to_string(),
+            metadata.cloned(),
+            submissions.to_vec(),
+        ));
         self.submission_selection
             .lock()
             .unwrap()
@@ -323,10 +385,15 @@ impl UserInterface for FakeUi {
 
     fn select_record_submission(
         &self,
-        _problem_id: &str,
-        _metadata: Option<&ProblemMetadata>,
-        _submissions: &[SubmissionRecord],
+        problem_id: &str,
+        metadata: Option<&ProblemMetadata>,
+        submissions: &[SubmissionRecord],
     ) -> Result<Option<SubmissionRecord>> {
+        self.record_submission_requests.lock().unwrap().push((
+            problem_id.to_string(),
+            metadata.cloned(),
+            submissions.to_vec(),
+        ));
         self.record_submission_selection
             .lock()
             .unwrap()
@@ -421,13 +488,28 @@ pub fn write_workspace_file(workspace: &Path, relative: &str, content: &str) -> 
 }
 
 pub fn sample_metadata(problem_id: &str) -> ProblemMetadata {
+    sample_metadata_with_context(problem_id, "Luogu", None)
+}
+
+pub fn sample_metadata_with_context(
+    problem_id: &str,
+    source: &str,
+    contest: Option<&str>,
+) -> ProblemMetadata {
     ProblemMetadata {
         id: problem_id.to_string(),
+        provider: aclog::problem::provider_from_problem_id(problem_id),
         title: format!("{problem_id} title"),
         difficulty: Some("入门".to_string()),
         tags: vec!["模拟".to_string(), "年份".to_string()],
-        source: Some("Luogu".to_string()),
-        url: format!("https://www.luogu.com.cn/problem/{problem_id}"),
+        source: Some(source.to_string()),
+        contest: contest.map(str::to_string),
+        url: match aclog::problem::provider_from_problem_id(problem_id) {
+            aclog::problem::ProblemProvider::AtCoder => {
+                format!("https://atcoder.jp/contests/tasks/{problem_id}")
+            }
+            _ => format!("https://www.luogu.com.cn/problem/{problem_id}"),
+        },
         fetched_at: FixedOffset::east_opt(8 * 3600)
             .unwrap()
             .with_ymd_and_hms(2024, 1, 1, 0, 0, 0)
@@ -437,9 +519,24 @@ pub fn sample_metadata(problem_id: &str) -> ProblemMetadata {
 }
 
 pub fn sample_submission(submission_id: u64, verdict: &str) -> SubmissionRecord {
+    sample_submission_for(
+        submission_id,
+        aclog::problem::ProblemProvider::Unknown,
+        None,
+        verdict,
+    )
+}
+
+pub fn sample_submission_for(
+    submission_id: u64,
+    provider: aclog::problem::ProblemProvider,
+    problem_id: Option<&str>,
+    verdict: &str,
+) -> SubmissionRecord {
     SubmissionRecord {
         submission_id,
-        problem_id: None,
+        problem_id: problem_id.map(str::to_string),
+        provider,
         submitter: "tester".to_string(),
         verdict: verdict.to_string(),
         score: Some(100),
@@ -455,6 +552,23 @@ pub fn sample_submission(submission_id: u64, verdict: &str) -> SubmissionRecord 
     }
 }
 
+pub fn sample_atcoder_metadata(problem_id: &str, contest: Option<&str>) -> ProblemMetadata {
+    sample_metadata_with_context(problem_id, "AtCoder", contest)
+}
+
+pub fn sample_atcoder_submission(
+    submission_id: u64,
+    problem_id: &str,
+    verdict: &str,
+) -> SubmissionRecord {
+    sample_submission_for(
+        submission_id,
+        aclog::problem::ProblemProvider::AtCoder,
+        Some(problem_id),
+        verdict,
+    )
+}
+
 pub fn sample_history_record(
     revision: &str,
     problem_id: &str,
@@ -462,10 +576,31 @@ pub fn sample_history_record(
     submission_id: Option<u64>,
     verdict: &str,
 ) -> HistoricalSolveRecord {
+    sample_history_record_with_context(
+        revision,
+        problem_id,
+        file_name,
+        submission_id,
+        verdict,
+        "Luogu",
+        None,
+    )
+}
+
+pub fn sample_history_record_with_context(
+    revision: &str,
+    problem_id: &str,
+    file_name: &str,
+    submission_id: Option<u64>,
+    verdict: &str,
+    source: &str,
+    contest: Option<&str>,
+) -> HistoricalSolveRecord {
     HistoricalSolveRecord {
         revision: revision.to_string(),
         record: SolveRecord {
             problem_id: problem_id.to_string(),
+            provider: aclog::problem::provider_from_problem_id(problem_id),
             title: format!("{problem_id} title"),
             verdict: verdict.to_string(),
             score: Some(100),
@@ -473,7 +608,8 @@ pub fn sample_history_record(
             memory_mb: Some(1.5),
             difficulty: "入门".to_string(),
             tags: vec!["模拟".to_string()],
-            source: "Luogu".to_string(),
+            source: source.to_string(),
+            contest: contest.map(str::to_string),
             submission_id,
             submission_time: Some(
                 FixedOffset::east_opt(8 * 3600)

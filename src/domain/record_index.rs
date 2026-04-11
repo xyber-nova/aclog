@@ -48,10 +48,13 @@ impl RecordIndex {
             .filter_map(|timeline| timeline.first())
             .map(|entry| ProblemRecordSummary {
                 problem_id: entry.record.problem_id.clone(),
+                provider: entry.record.provider,
                 title: entry.record.title.clone(),
                 verdict: entry.record.verdict.clone(),
                 difficulty: entry.record.difficulty.clone(),
                 tags: entry.record.tags.clone(),
+                source: entry.record.source.clone(),
+                contest: entry.record.contest.clone(),
                 submission_id: entry.record.submission_id,
                 submission_time: entry.record.submission_time,
                 files: timelines_by_file
@@ -127,6 +130,7 @@ fn to_file_summary(entry: &HistoricalSolveRecord) -> FileRecordSummary {
     FileRecordSummary {
         revision: entry.revision.clone(),
         problem_id: entry.record.problem_id.clone(),
+        provider: entry.record.provider,
         title: entry.record.title.clone(),
         file_name: entry.record.file_name.clone(),
         verdict: entry.record.verdict.clone(),
@@ -135,6 +139,7 @@ fn to_file_summary(entry: &HistoricalSolveRecord) -> FileRecordSummary {
         memory_mb: entry.record.memory_mb,
         difficulty: entry.record.difficulty.clone(),
         source: entry.record.source.clone(),
+        contest: entry.record.contest.clone(),
         tags: entry.record.tags.clone(),
         submission_id: entry.record.submission_id,
         submission_time: entry.record.submission_time,
@@ -155,7 +160,8 @@ mod tests {
             HistoricalSolveRecord {
                 revision: "old".to_string(),
                 record: SolveRecord {
-                    problem_id: "P1001".to_string(),
+                    problem_id: "luogu:P1001".to_string(),
+                    provider: crate::problem::ProblemProvider::Luogu,
                     title: "A".to_string(),
                     verdict: "WA".to_string(),
                     score: Some(50),
@@ -164,6 +170,7 @@ mod tests {
                     difficulty: "入门".to_string(),
                     tags: vec!["模拟".to_string()],
                     source: "Luogu".to_string(),
+                    contest: None,
                     submission_id: Some(1),
                     submission_time: Some(
                         FixedOffset::east_opt(8 * 3600)
@@ -180,7 +187,8 @@ mod tests {
             HistoricalSolveRecord {
                 revision: "new".to_string(),
                 record: SolveRecord {
-                    problem_id: "P1001".to_string(),
+                    problem_id: "luogu:P1001".to_string(),
+                    provider: crate::problem::ProblemProvider::Luogu,
                     title: "A".to_string(),
                     verdict: "AC".to_string(),
                     score: Some(100),
@@ -189,6 +197,7 @@ mod tests {
                     difficulty: "入门".to_string(),
                     tags: vec!["模拟".to_string()],
                     source: "Luogu".to_string(),
+                    contest: None,
                     submission_id: Some(2),
                     submission_time: Some(
                         FixedOffset::east_opt(8 * 3600)
@@ -208,7 +217,7 @@ mod tests {
         assert_eq!(index.current_by_file().len(), 1);
         assert_eq!(index.current_by_problem().len(), 1);
         assert_eq!(index.timeline_for_file("P1001.cpp").len(), 2);
-        assert_eq!(index.timeline_for_problem("P1001").len(), 2);
+        assert_eq!(index.timeline_for_problem("luogu:P1001").len(), 2);
         assert_eq!(index.current_by_file()[0].revision, "new");
     }
 }

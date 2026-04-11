@@ -7,6 +7,7 @@ use color_eyre::Result;
 use crate::{
     config::{AclogPaths, AppConfig},
     domain::{problem::ProblemMetadata, record_index::RecordIndex, submission::SubmissionRecord},
+    problem::ProblemProvider as ProblemSource,
     vcs::{JjRepoActorHandle, ProblemFileChange},
 };
 
@@ -29,6 +30,7 @@ pub trait ProblemProvider {
         &self,
         config: &AppConfig,
         paths: &AclogPaths,
+        provider: ProblemSource,
     ) -> Result<std::collections::HashSet<String>>;
 }
 
@@ -86,8 +88,9 @@ impl ProblemProvider for LiveDeps {
         &self,
         config: &AppConfig,
         paths: &AclogPaths,
+        provider: ProblemSource,
     ) -> Result<std::collections::HashSet<String>> {
-        crate::api::load_algorithm_tag_names(config, paths).await
+        crate::api::load_algorithm_tag_names(config, paths, provider).await
     }
 }
 

@@ -22,7 +22,7 @@ use self::deps::LiveDeps;
 pub use self::stats::StatsOptions;
 pub use self::support::{RecordListQuery, TrainingFieldsPatch};
 pub use self::sync::SyncOptions;
-pub use crate::domain::browser::{BrowserQuery, BrowserRootView};
+pub use crate::domain::browser::{BrowserProviderView, BrowserQuery, BrowserRootView};
 
 pub async fn run_init(workspace: PathBuf) -> Result<()> {
     init::run(workspace).await

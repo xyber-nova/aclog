@@ -1,3 +1,4 @@
+mod atcoder;
 mod luogu;
 
 use std::{collections::HashSet, fs, path::Path};
@@ -9,19 +10,22 @@ use tracing::{debug, info, instrument};
 use crate::{
     config::{AclogPaths, AppConfig},
     domain::{problem::ProblemMetadata, submission::SubmissionRecord},
+    problem::{ProblemProvider, metadata_cache_file_name, provider_key, split_global_problem_id},
 };
 
 #[instrument(
     level = "info",
     skip_all,
-    fields(problem_id, cache_file = %paths.problems_dir.join(format!("{problem_id}.toml")).display())
+    fields(problem_id, cache_file = %paths.problems_dir.join(metadata_cache_file_name(problem_id)).display())
 )]
 pub async fn resolve_problem_metadata(
     config: &AppConfig,
     paths: &AclogPaths,
     problem_id: &str,
 ) -> Result<Option<ProblemMetadata>> {
-    let cache_file = paths.problems_dir.join(format!("{problem_id}.toml"));
+    let cache_file = paths
+        .problems_dir
+        .join(metadata_cache_file_name(problem_id));
     if let Some(metadata) =
         read_cached_metadata(&cache_file, config.settings.problem_metadata_ttl_days())?
     {
@@ -30,14 +34,20 @@ pub async fn resolve_problem_metadata(
     }
     info!("元数据缓存未命中，转为远端获取");
 
-    let client = luogu::LuoguClient::new(config)?;
-    let metadata = client
-        .fetch_problem_metadata(
-            problem_id,
-            paths,
-            config.settings.problem_metadata_ttl_days(),
-        )
-        .await?;
+    let metadata = match split_global_problem_id(problem_id) {
+        Some((ProblemProvider::Luogu, raw_id)) => {
+            let client = luogu::LuoguClient::new(config)?;
+            client
+                .fetch_problem_metadata(raw_id, paths, config.settings.problem_metadata_ttl_days())
+                .await?
+        }
+        Some((ProblemProvider::AtCoder, raw_id)) => {
+            let client = atcoder::AtCoderProblemsClient::new()?;
+            client.fetch_problem_metadata(raw_id).await?
+        }
+        Some((ProblemProvider::Unknown, _)) | None => None,
+    };
+
     if let Some(metadata) = &metadata {
         fs::write(
             &cache_file,
@@ -56,23 +66,38 @@ pub async fn fetch_problem_submissions(
     paths: &AclogPaths,
     problem_id: &str,
 ) -> Result<Vec<SubmissionRecord>> {
-    let client = luogu::LuoguClient::new(config)?;
-    let submissions = client
-        .fetch_problem_submissions(problem_id, paths, config.settings.luogu_mappings_ttl_days())
-        .await?;
+    let submissions = match split_global_problem_id(problem_id) {
+        Some((ProblemProvider::Luogu, raw_id)) => {
+            let client = luogu::LuoguClient::new(config)?;
+            client
+                .fetch_problem_submissions(raw_id, paths, config.settings.luogu_mappings_ttl_days())
+                .await?
+        }
+        Some((ProblemProvider::AtCoder, raw_id)) => {
+            let client = atcoder::AtCoderProblemsClient::new()?;
+            client.fetch_problem_submissions(config, raw_id).await?
+        }
+        Some((ProblemProvider::Unknown, _)) | None => Vec::new(),
+    };
     info!(submissions = submissions.len(), "已获取提交记录");
     Ok(submissions)
 }
 
-#[instrument(level = "info", skip_all)]
+#[instrument(level = "info", skip_all, fields(provider = provider_key(provider)))]
 pub async fn load_algorithm_tag_names(
     config: &AppConfig,
     paths: &AclogPaths,
+    provider: ProblemProvider,
 ) -> Result<HashSet<String>> {
-    let client = luogu::LuoguClient::new(config)?;
-    let names = client
-        .load_algorithm_tag_names(paths, config.settings.luogu_tags_ttl_days())
-        .await?;
+    let names = match provider {
+        ProblemProvider::Luogu => {
+            let client = luogu::LuoguClient::new(config)?;
+            client
+                .load_algorithm_tag_names(paths, config.settings.luogu_tags_ttl_days())
+                .await?
+        }
+        ProblemProvider::AtCoder | ProblemProvider::Unknown => HashSet::new(),
+    };
     info!(algorithm_tags = names.len(), "已加载算法标签集合");
     Ok(names)
 }

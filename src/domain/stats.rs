@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
+    browser::BrowserProviderView,
     record::{FileRecordSummary, HistoricalSolveRecord, SolveRecord},
     record_index::RecordIndex,
 };
@@ -73,6 +74,17 @@ pub struct StatsDashboard {
     pub problem_reviews: Vec<ProblemReviewCandidate>,
     pub tag_practice_suggestions: Vec<TagPracticeSuggestion>,
     pub start_in_review: bool,
+    #[serde(default)]
+    pub provider_dashboards: Vec<StatsProviderDashboard>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatsProviderDashboard {
+    pub provider: BrowserProviderView,
+    pub summary: StatsSummary,
+    pub problem_reviews: Vec<ProblemReviewCandidate>,
+    pub tag_practice_suggestions: Vec<TagPracticeSuggestion>,
+    pub tag_features_supported: bool,
 }
 
 pub fn summarize_solve_records(
@@ -491,7 +503,8 @@ mod tests {
     fn summarize_solve_records_counts_total_and_unique_views() {
         let records = vec![
             SolveRecord {
-                problem_id: "P1001".to_string(),
+                problem_id: "luogu:P1001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "A".to_string(),
                 verdict: "WA".to_string(),
                 score: None,
@@ -500,6 +513,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["模拟".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(1),
                 submission_time: Some(
                     FixedOffset::east_opt(8 * 3600)
@@ -513,7 +527,8 @@ mod tests {
                 source_order: 1,
             },
             SolveRecord {
-                problem_id: "P1001".to_string(),
+                problem_id: "luogu:P1001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "A".to_string(),
                 verdict: "AC".to_string(),
                 score: None,
@@ -522,6 +537,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["模拟".to_string(), "二分".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(2),
                 submission_time: Some(
                     FixedOffset::east_opt(8 * 3600)
@@ -535,7 +551,8 @@ mod tests {
                 source_order: 0,
             },
             SolveRecord {
-                problem_id: "P1002".to_string(),
+                problem_id: "unknown:P1002".to_string(),
+                provider: crate::problem::ProblemProvider::Unknown,
                 title: "B".to_string(),
                 verdict: "-".to_string(),
                 score: None,
@@ -544,6 +561,7 @@ mod tests {
                 difficulty: "-".to_string(),
                 tags: Vec::new(),
                 source: "-".to_string(),
+                contest: None,
                 submission_id: None,
                 submission_time: None,
                 file_name: "P1002.cpp".to_string(),
@@ -588,7 +606,8 @@ mod tests {
     fn build_review_suggestions_includes_immediate_problem_review() {
         let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
         let records = vec![SolveRecord {
-            problem_id: "P1001".to_string(),
+            problem_id: "luogu:P1001".to_string(),
+            provider: crate::problem::ProblemProvider::Luogu,
             title: "A".to_string(),
             verdict: "WA".to_string(),
             score: None,
@@ -597,6 +616,7 @@ mod tests {
             difficulty: "入门".to_string(),
             tags: vec!["模拟".to_string()],
             source: "Luogu".to_string(),
+            contest: None,
             submission_id: Some(1),
             submission_time: Some(now - chrono::Duration::days(1)),
             file_name: "P1001.cpp".to_string(),
@@ -620,7 +640,7 @@ mod tests {
 
         assert_eq!(suggestions.problem_reviews.len(), 1);
         let candidate = &suggestions.problem_reviews[0];
-        assert_eq!(candidate.problem_id, "P1001");
+        assert_eq!(candidate.problem_id, "luogu:P1001");
         assert!(candidate.priority >= 12);
         assert!(
             candidate
@@ -646,7 +666,8 @@ mod tests {
     fn build_review_suggestions_adds_interval_bonus_for_stable_ac() {
         let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
         let records = vec![SolveRecord {
-            problem_id: "P2001".to_string(),
+            problem_id: "luogu:P2001".to_string(),
+            provider: crate::problem::ProblemProvider::Luogu,
             title: "Stable".to_string(),
             verdict: "AC".to_string(),
             score: None,
@@ -655,6 +676,7 @@ mod tests {
             difficulty: "入门".to_string(),
             tags: vec!["二分".to_string()],
             source: "Luogu".to_string(),
+            contest: None,
             submission_id: Some(2),
             submission_time: Some(now - chrono::Duration::days(50)),
             file_name: "P2001.cpp".to_string(),
@@ -675,7 +697,7 @@ mod tests {
         assert_eq!(
             suggestions.problem_reviews,
             vec![ProblemReviewCandidate {
-                problem_id: "P2001".to_string(),
+                problem_id: "luogu:P2001".to_string(),
                 title: "Stable".to_string(),
                 verdict: "AC".to_string(),
                 last_submission_time: records[0].submission_time,
@@ -689,7 +711,8 @@ mod tests {
     #[test]
     fn build_review_suggestions_skips_interval_review_without_submission_time() {
         let records = vec![SolveRecord {
-            problem_id: "P3001".to_string(),
+            problem_id: "luogu:P3001".to_string(),
+            provider: crate::problem::ProblemProvider::Luogu,
             title: "NoTime".to_string(),
             verdict: "AC".to_string(),
             score: None,
@@ -698,6 +721,7 @@ mod tests {
             difficulty: "入门".to_string(),
             tags: vec!["图论".to_string()],
             source: "Luogu".to_string(),
+            contest: None,
             submission_id: None,
             submission_time: None,
             file_name: "P3001.cpp".to_string(),
@@ -723,7 +747,8 @@ mod tests {
         let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
         let records = vec![
             SolveRecord {
-                problem_id: "P4001".to_string(),
+                problem_id: "luogu:P4001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "A".to_string(),
                 verdict: "AC".to_string(),
                 score: None,
@@ -732,6 +757,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["数论".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(1),
                 submission_time: Some(now - chrono::Duration::days(10)),
                 file_name: "P4001.cpp".to_string(),
@@ -739,7 +765,8 @@ mod tests {
                 source_order: 0,
             },
             SolveRecord {
-                problem_id: "P4002".to_string(),
+                problem_id: "luogu:P4002".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "B".to_string(),
                 verdict: "WA".to_string(),
                 score: None,
@@ -748,6 +775,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["数论".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(2),
                 submission_time: Some(now - chrono::Duration::days(5)),
                 file_name: "P4002.cpp".to_string(),
@@ -788,7 +816,8 @@ mod tests {
         let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
         let records = vec![
             SolveRecord {
-                problem_id: "P5001".to_string(),
+                problem_id: "luogu:P5001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "Late".to_string(),
                 verdict: "AC".to_string(),
                 score: None,
@@ -797,6 +826,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["模拟".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(1),
                 submission_time: Some(now - chrono::Duration::days(70)),
                 file_name: "P5001.cpp".to_string(),
@@ -804,7 +834,8 @@ mod tests {
                 source_order: 0,
             },
             SolveRecord {
-                problem_id: "P5002".to_string(),
+                problem_id: "luogu:P5002".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "Wrong".to_string(),
                 verdict: "WA".to_string(),
                 score: None,
@@ -813,6 +844,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["模拟".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(2),
                 submission_time: Some(now - chrono::Duration::days(2)),
                 file_name: "P5002.cpp".to_string(),
@@ -837,7 +869,7 @@ mod tests {
                 .iter()
                 .map(|item| item.problem_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["P5002", "P5001"]
+            vec!["luogu:P5002", "luogu:P5001"]
         );
     }
 
@@ -847,7 +879,8 @@ mod tests {
             HistoricalSolveRecord {
                 revision: "old".to_string(),
                 record: SolveRecord {
-                    problem_id: "P1001".to_string(),
+                    problem_id: "luogu:P1001".to_string(),
+                    provider: crate::problem::ProblemProvider::Luogu,
                     title: "A".to_string(),
                     verdict: "WA".to_string(),
                     score: None,
@@ -856,6 +889,7 @@ mod tests {
                     difficulty: "入门".to_string(),
                     tags: vec!["模拟".to_string()],
                     source: "Luogu".to_string(),
+                    contest: None,
                     submission_id: Some(1),
                     submission_time: Some(
                         FixedOffset::east_opt(8 * 3600)
@@ -872,7 +906,8 @@ mod tests {
             HistoricalSolveRecord {
                 revision: "new".to_string(),
                 record: SolveRecord {
-                    problem_id: "P1001".to_string(),
+                    problem_id: "luogu:P1001".to_string(),
+                    provider: crate::problem::ProblemProvider::Luogu,
                     title: "A".to_string(),
                     verdict: "AC".to_string(),
                     score: None,
@@ -881,6 +916,7 @@ mod tests {
                     difficulty: "入门".to_string(),
                     tags: vec!["模拟".to_string()],
                     source: "Luogu".to_string(),
+                    contest: None,
                     submission_id: Some(2),
                     submission_time: Some(
                         FixedOffset::east_opt(8 * 3600)
@@ -900,7 +936,8 @@ mod tests {
             latest_records_by_file(&records),
             vec![FileRecordSummary {
                 revision: "new".to_string(),
-                problem_id: "P1001".to_string(),
+                problem_id: "luogu:P1001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "A".to_string(),
                 file_name: "solutions/P1001.cpp".to_string(),
                 verdict: "AC".to_string(),
@@ -909,6 +946,7 @@ mod tests {
                 memory_mb: None,
                 difficulty: "入门".to_string(),
                 source: "Luogu".to_string(),
+                contest: None,
                 tags: vec!["模拟".to_string()],
                 submission_id: Some(2),
                 submission_time: Some(

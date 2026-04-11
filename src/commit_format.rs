@@ -9,6 +9,7 @@ use crate::domain::{
     submission::SubmissionRecord,
     training_fields::format_training_fields,
 };
+use crate::problem::{normalize_problem_id_with_source, provider_from_problem_id, provider_label};
 
 pub fn build_commit_message(
     problem_id: &str,
@@ -60,8 +61,12 @@ pub fn build_solve_commit_message_with_training(
         .and_then(|item| item.difficulty.as_deref())
         .unwrap_or("-");
     let source = metadata
-        .and_then(|item| item.source.as_deref())
-        .unwrap_or("Luogu");
+        .map(|item| provider_label(item.provider))
+        .or_else(|| metadata.and_then(|item| item.source.as_deref()))
+        .unwrap_or_else(|| provider_label(record.provider));
+    let contest = metadata
+        .and_then(|item| item.contest.as_deref())
+        .filter(|value| !value.trim().is_empty());
     let submitted_at = record
         .submitted_at
         .map(|value| value.to_rfc3339())
@@ -97,6 +102,7 @@ pub fn build_solve_commit_message_with_training(
         format!("Tags: {tags}"),
         format!("Difficulty: {difficulty}"),
         format!("Source: {source}"),
+        format!("Contest: {}", contest.unwrap_or("-")),
         format!("File: {file_name}"),
     ];
     for (key, value) in format_training_fields(training) {
@@ -155,6 +161,7 @@ pub fn build_solve_record_message(record: &SolveRecord) -> String {
         ),
         format!("Difficulty: {}", record.difficulty),
         format!("Source: {}", record.source),
+        format!("Contest: {}", record.contest.as_deref().unwrap_or("-")),
         format!("File: {}", record.file_name),
     ];
     for (key, value) in format_training_fields(&record.training) {
@@ -189,8 +196,8 @@ pub fn parse_solve_commit_message(message: &str, source_order: usize) -> Option<
     let captures = Regex::new(r"^solve\((?P<problem_id>[^)]+)\):\s*(?P<title>.*)$")
         .ok()?
         .captures(first_line)?;
-    let problem_id = captures.name("problem_id")?.as_str().trim().to_string();
-    if problem_id.is_empty() {
+    let raw_problem_id = captures.name("problem_id")?.as_str().trim();
+    if raw_problem_id.is_empty() {
         return None;
     }
 
@@ -199,9 +206,13 @@ pub fn parse_solve_commit_message(message: &str, source_order: usize) -> Option<
         .skip(1)
         .filter_map(parse_message_field)
         .collect::<HashMap<_, _>>();
+    let source = normalize_stat_field(field_value(&fields, &["来源", "Source"]));
+    let problem_id = normalize_problem_id_with_source(raw_problem_id, Some(source.as_str()));
+    let provider = provider_from_problem_id(&problem_id);
 
     Some(SolveRecord {
         problem_id,
+        provider,
         title: normalize_title_field(captures.name("title").map(|value| value.as_str())),
         verdict: normalize_stat_field(field_value(&fields, &["判题结果", "Verdict"])),
         score: parse_score(field_value(&fields, &["分数", "Score"])),
@@ -209,7 +220,8 @@ pub fn parse_solve_commit_message(message: &str, source_order: usize) -> Option<
         memory_mb: parse_memory_mb(field_value(&fields, &["内存", "Memory"])),
         difficulty: normalize_stat_field(field_value(&fields, &["难度", "Difficulty"])),
         tags: parse_tags(field_value(&fields, &["标签", "Tags"])),
-        source: normalize_stat_field(field_value(&fields, &["来源", "Source"])),
+        source,
+        contest: normalize_optional_field(field_value(&fields, &["比赛", "Contest"])),
         submission_id: parse_submission_id(field_value(&fields, &["提交编号", "Submission-ID"])),
         submission_time: field_value(&fields, &["提交时间", "Submission-Time"])
             .and_then(|value| DateTime::parse_from_rfc3339(value).ok()),
@@ -259,6 +271,13 @@ fn normalize_title_field(value: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("Unknown Problem")
         .to_string()
+}
+
+fn normalize_optional_field(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")
+        .map(ToString::to_string)
 }
 
 fn field_value<'a>(fields: &'a HashMap<String, String>, aliases: &[&str]) -> Option<&'a str> {
@@ -338,11 +357,13 @@ mod tests {
 
     fn sample_metadata() -> ProblemMetadata {
         ProblemMetadata {
-            id: "P1001".to_string(),
+            id: "luogu:P1001".to_string(),
+            provider: crate::problem::ProblemProvider::Luogu,
             title: "A+B Problem".to_string(),
             difficulty: Some("入门".to_string()),
             tags: vec!["模拟".to_string(), "入门".to_string()],
             source: Some("Luogu".to_string()),
+            contest: None,
             url: "https://www.luogu.com.cn/problem/P1001".to_string(),
             fetched_at: FixedOffset::east_opt(8 * 3600)
                 .unwrap()
@@ -355,7 +376,8 @@ mod tests {
     fn sample_record() -> SubmissionRecord {
         SubmissionRecord {
             submission_id: 123456,
-            problem_id: Some("P1001".to_string()),
+            problem_id: Some("luogu:P1001".to_string()),
+            provider: crate::problem::ProblemProvider::Luogu,
             submitter: "123456".to_string(),
             verdict: "AC".to_string(),
             score: Some(100),
@@ -376,9 +398,9 @@ mod tests {
         let metadata = sample_metadata();
         let selection = SyncSelection::Submission(sample_record());
 
-        let message = build_commit_message("P1001", "P1001.cpp", Some(&metadata), &selection);
+        let message = build_commit_message("luogu:P1001", "P1001.cpp", Some(&metadata), &selection);
 
-        assert!(message.starts_with("solve(P1001): A+B Problem"));
+        assert!(message.starts_with("solve(luogu:P1001): A+B Problem"));
         assert!(message.contains("Verdict: AC"));
         assert!(message.contains("Submission-ID: 123456"));
         assert!(message.contains("File: P1001.cpp"));
@@ -389,9 +411,10 @@ mod tests {
         let metadata = sample_metadata();
         let record = sample_record();
 
-        let message = build_solve_commit_message("P1001", "P1001.cpp", Some(&metadata), &record);
+        let message =
+            build_solve_commit_message("luogu:P1001", "P1001.cpp", Some(&metadata), &record);
 
-        assert!(message.starts_with("solve(P1001): A+B Problem"));
+        assert!(message.starts_with("solve(luogu:P1001): A+B Problem"));
         assert!(message.contains("Submission-ID: 123456"));
     }
 
@@ -400,7 +423,7 @@ mod tests {
         let metadata = sample_metadata();
 
         let message = build_commit_message(
-            "P1001",
+            "luogu:P1001",
             "P1001.cpp",
             Some(&metadata),
             &SyncSelection::Delete,
@@ -408,7 +431,7 @@ mod tests {
 
         assert_eq!(
             message,
-            "remove(P1001): 删除题解文件\n\nTitle: A+B Problem\nFile: P1001.cpp"
+            "remove(luogu:P1001): 删除题解文件\n\nTitle: A+B Problem\nFile: P1001.cpp"
         );
     }
 
@@ -418,7 +441,7 @@ mod tests {
 
         let record = parse_solve_commit_message(message, 0).unwrap();
 
-        assert_eq!(record.problem_id, "P1001");
+        assert_eq!(record.problem_id, "luogu:P1001");
         assert_eq!(record.title, "A+B Problem");
         assert_eq!(record.verdict, "AC");
         assert_eq!(record.score, Some(100));
@@ -442,7 +465,7 @@ mod tests {
         };
 
         let message = build_solve_commit_message_with_training(
-            "P1001",
+            "luogu:P1001",
             "P1001.cpp",
             Some(&metadata),
             &record,
@@ -456,7 +479,8 @@ mod tests {
     #[test]
     fn build_solve_record_message_preserves_existing_record_data() {
         let record = SolveRecord {
-            problem_id: "P1001".to_string(),
+            problem_id: "luogu:P1001".to_string(),
+            provider: crate::problem::ProblemProvider::Luogu,
             title: "A+B Problem".to_string(),
             verdict: "AC".to_string(),
             score: Some(100),
@@ -465,6 +489,7 @@ mod tests {
             difficulty: "入门".to_string(),
             tags: vec!["模拟".to_string()],
             source: "Luogu".to_string(),
+            contest: None,
             submission_id: Some(123456),
             submission_time: Some(
                 FixedOffset::east_opt(8 * 3600)
@@ -506,7 +531,8 @@ mod tests {
             vec![HistoricalSolveRecord {
                 revision: "abc123".to_string(),
                 record: SolveRecord {
-                    problem_id: "P1001".to_string(),
+                    problem_id: "luogu:P1001".to_string(),
+                    provider: crate::problem::ProblemProvider::Luogu,
                     title: "A+B Problem".to_string(),
                     verdict: "-".to_string(),
                     score: None,
@@ -515,6 +541,7 @@ mod tests {
                     difficulty: "-".to_string(),
                     tags: Vec::new(),
                     source: "-".to_string(),
+                    contest: None,
                     submission_id: Some(42),
                     submission_time: None,
                     file_name: "P1001.cpp".to_string(),

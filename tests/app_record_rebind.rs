@@ -19,8 +19,11 @@ async fn record_rebind_uses_cli_revision_and_submission_id() {
         "solve(P1001): title\n\nSubmission-ID: 1\nFile: P1001.cpp".to_string(),
     )]);
     deps.resolve_revset_as("abc123", "real-rev");
-    deps.insert_metadata("P1001", Some(sample_metadata("P1001")));
-    deps.insert_submissions("P1001", vec![sample_submission(2, "AC")]);
+    deps.insert_metadata("luogu:P1001", Some(sample_metadata("luogu:P1001")));
+    let mut submission = sample_submission(2, "AC");
+    submission.problem_id = Some("luogu:P1001".to_string());
+    submission.provider = aclog::problem::ProblemProvider::Luogu;
+    deps.insert_submissions("luogu:P1001", vec![submission]);
     let ui = FakeUi::default();
 
     run_record_rebind_with(
@@ -51,13 +54,15 @@ async fn record_rebind_falls_back_to_ui_for_remaining_choices() {
         "rev-ui".to_string(),
         "solve(P1002): title\n\nSubmission-ID: 1\nFile: P1002.cpp".to_string(),
     )]);
-    deps.insert_metadata("P1002", Some(sample_metadata("P1002")));
-    let submission = sample_submission(8, "AC");
-    deps.insert_submissions("P1002", vec![submission.clone()]);
+    deps.insert_metadata("luogu:P1002", Some(sample_metadata("luogu:P1002")));
+    let mut submission = sample_submission(8, "AC");
+    submission.problem_id = Some("luogu:P1002".to_string());
+    submission.provider = aclog::problem::ProblemProvider::Luogu;
+    deps.insert_submissions("luogu:P1002", vec![submission.clone()]);
     let ui = FakeUi {
         record_to_rebind_selection: std::sync::Mutex::new(Some(Some(sample_history_record(
             "rev-ui",
-            "P1002",
+            "luogu:P1002",
             "P1002.cpp",
             Some(1),
             "WA",
@@ -92,8 +97,11 @@ async fn record_rebind_rejects_revision_outside_candidate_set() {
         "solve(P1004): title\n\nSubmission-ID: 1\nFile: P1003.cpp".to_string(),
     )]);
     deps.resolve_revset_as("abc123", "real-rev");
-    deps.insert_metadata("P1003", Some(sample_metadata("P1003")));
-    deps.insert_submissions("P1003", vec![sample_submission(2, "AC")]);
+    deps.insert_metadata("luogu:P1003", Some(sample_metadata("luogu:P1003")));
+    let mut submission = sample_submission(2, "AC");
+    submission.problem_id = Some("luogu:P1003".to_string());
+    submission.provider = aclog::problem::ProblemProvider::Luogu;
+    deps.insert_submissions("luogu:P1003", vec![submission]);
     let ui = FakeUi::default();
 
     let error = run_record_rebind_with(
@@ -122,8 +130,11 @@ async fn record_rebind_preserves_existing_training_fields() {
         "solve(P1004): title\n\nVerdict: WA\nSubmission-ID: 1\nFile: P1004.cpp\nNote: 先补图论\nConfidence: low".to_string(),
     )]);
     deps.resolve_revset_as("abc123", "real-rev");
-    deps.insert_metadata("P1004", Some(sample_metadata("P1004")));
-    deps.insert_submissions("P1004", vec![sample_submission(3, "AC")]);
+    deps.insert_metadata("luogu:P1004", Some(sample_metadata("luogu:P1004")));
+    let mut submission = sample_submission(3, "AC");
+    submission.problem_id = Some("luogu:P1004".to_string());
+    submission.provider = aclog::problem::ProblemProvider::Luogu;
+    deps.insert_submissions("luogu:P1004", vec![submission]);
     let ui = FakeUi::default();
 
     run_record_rebind_with(

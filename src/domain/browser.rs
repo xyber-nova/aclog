@@ -7,6 +7,7 @@ use crate::domain::{
     record::{HistoricalSolveRecord, ProblemRecordSummary},
     record_index::RecordIndex,
 };
+use crate::problem::{ProblemProvider, human_problem_id};
 use crate::utils::{normalize_verdict, verdict_equals};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -16,8 +17,18 @@ pub enum BrowserRootView {
     Problems,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BrowserProviderView {
+    Luogu,
+    AtCoder,
+    #[default]
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BrowserQuery {
+    #[serde(default)]
+    pub provider: BrowserProviderView,
     pub root_view: BrowserRootView,
     pub problem_id: Option<String>,
     pub file_name: Option<String>,
@@ -36,6 +47,9 @@ pub struct BrowserQuery {
 pub struct BrowserFileRow {
     pub revision: String,
     pub problem_id: String,
+    pub provider: ProblemProvider,
+    pub source: String,
+    pub contest: Option<String>,
     pub title: String,
     pub file_name: String,
     pub verdict: String,
@@ -49,6 +63,9 @@ pub struct BrowserFileRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserProblemRow {
     pub problem_id: String,
+    pub provider: ProblemProvider,
+    pub source: String,
+    pub contest: Option<String>,
     pub title: String,
     pub verdict: String,
     pub difficulty: String,
@@ -64,6 +81,9 @@ pub struct BrowserProblemRow {
 pub struct BrowserTimelineRow {
     pub revision: String,
     pub problem_id: String,
+    pub provider: ProblemProvider,
+    pub source: String,
+    pub contest: Option<String>,
     pub title: String,
     pub file_name: String,
     pub verdict: String,
@@ -87,6 +107,9 @@ pub fn build_browser_state(index: &RecordIndex) -> BrowserState {
         .map(|item| BrowserFileRow {
             revision: item.revision.clone(),
             problem_id: item.problem_id.clone(),
+            provider: item.provider,
+            source: item.source.clone(),
+            contest: item.contest.clone(),
             title: item.title.clone(),
             file_name: item.file_name.clone(),
             verdict: normalize_verdict(&item.verdict).into_owned(),
@@ -102,6 +125,9 @@ pub fn build_browser_state(index: &RecordIndex) -> BrowserState {
         .iter()
         .map(|item| BrowserProblemRow {
             problem_id: item.problem_id.clone(),
+            provider: item.provider,
+            source: item.source.clone(),
+            contest: item.contest.clone(),
             title: item.title.clone(),
             verdict: normalize_verdict(&item.verdict).into_owned(),
             difficulty: item.difficulty.clone(),
@@ -121,6 +147,7 @@ pub fn filter_browser_files(rows: &[BrowserFileRow], query: &BrowserQuery) -> Ve
         .filter(|row| {
             matches_browser_row(
                 query,
+                row.provider,
                 &row.problem_id,
                 &row.file_name,
                 &row.verdict,
@@ -146,6 +173,7 @@ pub fn filter_browser_problems(
             matched_file
                 && matches_browser_row(
                     query,
+                    row.provider,
                     &row.problem_id,
                     &row.problem_id,
                     &row.verdict,
@@ -166,6 +194,7 @@ pub fn filter_timeline_rows(
         .filter(|row| {
             matches_browser_row(
                 query,
+                row.provider,
                 &row.problem_id,
                 &row.file_name,
                 &row.verdict,
@@ -216,6 +245,9 @@ fn to_timeline_row(record: &HistoricalSolveRecord) -> BrowserTimelineRow {
     BrowserTimelineRow {
         revision: record.revision.clone(),
         problem_id: record.record.problem_id.clone(),
+        provider: record.record.provider,
+        source: record.record.source.clone(),
+        contest: record.record.contest.clone(),
         title: record.record.title.clone(),
         file_name: record.record.file_name.clone(),
         verdict: normalize_verdict(&record.record.verdict).into_owned(),
@@ -251,6 +283,7 @@ fn summarize_training_fields(training: &crate::domain::record::TrainingFields) -
 
 fn matches_browser_row(
     query: &BrowserQuery,
+    provider: ProblemProvider,
     problem_id: &str,
     file_name: &str,
     verdict: &str,
@@ -258,10 +291,11 @@ fn matches_browser_row(
     tags: &[String],
     submission_time: Option<DateTime<FixedOffset>>,
 ) -> bool {
-    query
-        .problem_id
-        .as_deref()
-        .is_none_or(|needle| problem_id.eq_ignore_ascii_case(needle))
+    query.provider.matches(provider)
+        && query
+            .problem_id
+            .as_deref()
+            .is_none_or(|needle| problem_id_matches(problem_id, needle))
         && query
             .file_name
             .as_deref()
@@ -281,6 +315,21 @@ fn matches_browser_row(
         && query
             .days
             .is_none_or(|days| within_days(submission_time, days))
+}
+
+impl BrowserProviderView {
+    pub fn matches(self, provider: ProblemProvider) -> bool {
+        match self {
+            BrowserProviderView::All => true,
+            BrowserProviderView::Luogu => provider == ProblemProvider::Luogu,
+            BrowserProviderView::AtCoder => provider == ProblemProvider::AtCoder,
+        }
+    }
+}
+
+fn problem_id_matches(problem_id: &str, needle: &str) -> bool {
+    problem_id.eq_ignore_ascii_case(needle)
+        || human_problem_id(problem_id).eq_ignore_ascii_case(needle)
 }
 
 fn within_days(submission_time: Option<DateTime<FixedOffset>>, days: i64) -> bool {
@@ -308,7 +357,8 @@ mod tests {
         let record = HistoricalSolveRecord {
             revision: "rev".to_string(),
             record: SolveRecord {
-                problem_id: "P1001".to_string(),
+                problem_id: "luogu:P1001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "A".to_string(),
                 verdict: "AC".to_string(),
                 score: None,
@@ -317,6 +367,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["模拟".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(1),
                 submission_time: Some(
                     FixedOffset::east_opt(8 * 3600)
@@ -338,7 +389,7 @@ mod tests {
         assert_eq!(state.files.len(), 1);
         assert_eq!(state.problems.len(), 1);
         assert_eq!(state.files[0].training_summary, "复习");
-        assert_eq!(timeline_rows_for_problem(&index, "P1001").len(), 1);
+        assert_eq!(timeline_rows_for_problem(&index, "luogu:P1001").len(), 1);
     }
 
     #[test]
@@ -346,7 +397,10 @@ mod tests {
         let rows = vec![
             super::BrowserFileRow {
                 revision: "rev".to_string(),
-                problem_id: "P1001".to_string(),
+                problem_id: "luogu:P1001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
+                source: "Luogu".to_string(),
+                contest: None,
                 title: "A".to_string(),
                 file_name: "sol/P1001.cpp".to_string(),
                 verdict: "AC".to_string(),
@@ -358,7 +412,10 @@ mod tests {
             },
             super::BrowserFileRow {
                 revision: "rev2".to_string(),
-                problem_id: "P1002".to_string(),
+                problem_id: "luogu:P1002".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
+                source: "Luogu".to_string(),
+                contest: None,
                 title: "B".to_string(),
                 file_name: "sol/P1002.cpp".to_string(),
                 verdict: "WA".to_string(),
@@ -379,6 +436,6 @@ mod tests {
             },
         );
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].problem_id, "P1001");
+        assert_eq!(filtered[0].problem_id, "luogu:P1001");
     }
 }

@@ -6,6 +6,7 @@ use color_eyre::eyre::{OptionExt, WrapErr, eyre};
 use serde_json::Value;
 
 use crate::domain::submission::SubmissionRecord;
+use crate::problem::{ProblemProvider, global_problem_id};
 use crate::utils::normalize_verdict;
 
 use super::{
@@ -71,7 +72,8 @@ pub fn parse_submission_record(
             .get("problem")
             .and_then(|item| item.get("pid"))
             .and_then(Value::as_str)
-            .map(ToString::to_string),
+            .map(|pid| global_problem_id(ProblemProvider::Luogu, pid)),
+        provider: ProblemProvider::Luogu,
         submitter,
         verdict,
         score,

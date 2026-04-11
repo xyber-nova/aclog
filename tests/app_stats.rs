@@ -81,7 +81,7 @@ async fn stats_review_mode_opens_dashboard_in_review_mode() {
         dashboards[0]
             .problem_reviews
             .iter()
-            .any(|item| item.problem_id == "P1001" && item.verdict == "WA")
+            .any(|item| item.problem_id == "luogu:P1001" && item.verdict == "WA")
     );
     assert!(
         dashboards[0]
@@ -187,7 +187,7 @@ async fn stats_days_filters_summary_but_not_review_suggestions() {
         dashboards[1]
             .problem_reviews
             .iter()
-            .any(|item| item.problem_id == "P3001")
+            .any(|item| item.problem_id == "luogu:P3001")
     );
     assert!(
         dashboards[1]
@@ -195,4 +195,74 @@ async fn stats_days_filters_summary_but_not_review_suggestions() {
             .iter()
             .any(|item| item.tag == "模拟")
     );
+}
+
+#[tokio::test]
+async fn stats_builds_provider_dashboards_and_degrades_non_luogu_tag_sections() {
+    let workspace = workspace_with_config();
+    let deps = FakeDeps::default();
+    deps.set_commit_descriptions(vec![
+        (
+            "rev-l".to_string(),
+            "solve(P4001): Luogu\n\nVerdict: WA\nDifficulty: 入门\nTags: 模拟\nSource: Luogu\nSubmission-ID: 1\nSubmission-Time: 2024-01-02T03:04:05+08:00\nFile: P4001.cpp\nMistakes: 边界".to_string(),
+        ),
+        (
+            "rev-a".to_string(),
+            "solve(atcoder:abc350_a): AtCoder\n\nVerdict: WA\nDifficulty: C\nTags: implementation\nSource: AtCoder\nContest: ABC350\nSubmission-ID: 2\nSubmission-Time: 2024-01-03T03:04:05+08:00\nFile: abc350_a.cpp\nMistakes: 模拟不足".to_string(),
+        ),
+    ]);
+    deps.set_algorithm_tag_names(&["模拟", "二分"]);
+    let ui = FakeUi::default();
+
+    run_stats_with_options_and_deps(
+        workspace.path().to_path_buf(),
+        StatsOptions {
+            review: true,
+            ..StatsOptions::default()
+        },
+        &deps,
+        &ui,
+    )
+    .await
+    .unwrap();
+
+    let dashboards = ui.shown_dashboards.lock().unwrap();
+    assert_eq!(dashboards.len(), 1);
+    assert_eq!(dashboards[0].provider_dashboards.len(), 3);
+
+    let luogu = dashboards[0]
+        .provider_dashboards
+        .iter()
+        .find(|item| item.provider == aclog::domain::browser::BrowserProviderView::Luogu)
+        .unwrap();
+    assert!(luogu.tag_features_supported);
+    assert_eq!(luogu.summary.total_solve_records, 1);
+    assert_eq!(luogu.summary.tag_counts, vec![("模拟".to_string(), 1)]);
+    assert_eq!(luogu.tag_practice_suggestions.len(), 1);
+    assert_eq!(
+        luogu.problem_reviews[0].matched_tags,
+        vec!["模拟".to_string()]
+    );
+
+    let atcoder = dashboards[0]
+        .provider_dashboards
+        .iter()
+        .find(|item| item.provider == aclog::domain::browser::BrowserProviderView::AtCoder)
+        .unwrap();
+    assert!(!atcoder.tag_features_supported);
+    assert_eq!(atcoder.summary.total_solve_records, 1);
+    assert!(atcoder.summary.tag_counts.is_empty());
+    assert!(atcoder.tag_practice_suggestions.is_empty());
+    assert_eq!(atcoder.problem_reviews.len(), 1);
+    assert!(atcoder.problem_reviews[0].matched_tags.is_empty());
+
+    let all = dashboards[0]
+        .provider_dashboards
+        .iter()
+        .find(|item| item.provider == aclog::domain::browser::BrowserProviderView::All)
+        .unwrap();
+    assert!(!all.tag_features_supported);
+    assert_eq!(all.summary.total_solve_records, 2);
+    assert!(all.summary.tag_counts.is_empty());
+    assert!(all.tag_practice_suggestions.is_empty());
 }

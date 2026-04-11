@@ -22,6 +22,7 @@ use crate::{
         record::{HistoricalSolveRecord, SyncSelection},
         submission::SubmissionRecord,
     },
+    problem::{human_problem_id, provider_label},
     ui::terminal::{
         TerminalHandle,
         common::{
@@ -189,7 +190,7 @@ pub(crate) fn run_record_app(
                 lines_panel(
                     "选择要重写的记录",
                     vec![
-                        Line::from(format!("题号: {problem_id}")),
+                        Line::from(format!("题号: {}", human_problem_id(problem_id))),
                         Line::from(format!("文件: {file_name}")),
                     ],
                 ),
@@ -345,15 +346,20 @@ fn problem_header_lines(
     metadata.map_or_else(
         || {
             vec![
-                Line::from(format!("题号: {problem_id}")),
-                Line::from("难度: -  标签: -"),
+                Line::from(format!("题号: {}", human_problem_id(problem_id))),
+                Line::from("来源: -  难度: -  标签: -"),
             ]
         },
         |item| {
-            vec![
-                Line::from(format!("题号: {problem_id}  标题: {}", item.title)),
+            let mut lines = vec![
                 Line::from(format!(
-                    "难度: {}  标签: {}",
+                    "题号: {}  标题: {}",
+                    human_problem_id(problem_id),
+                    item.title
+                )),
+                Line::from(format!(
+                    "来源: {}  难度: {}  标签: {}",
+                    provider_label(item.provider),
                     item.difficulty.as_deref().unwrap_or("-"),
                     if item.tags.is_empty() {
                         "-".to_string()
@@ -361,7 +367,11 @@ fn problem_header_lines(
                         item.tags.join(", ")
                     }
                 )),
-            ]
+            ];
+            if let Some(contest) = item.contest.as_deref() {
+                lines.push(Line::from(format!("比赛: {contest}")));
+            }
+            lines
         },
     )
 }
@@ -542,11 +552,13 @@ mod tests {
 
     fn sample_metadata() -> ProblemMetadata {
         ProblemMetadata {
-            id: "P1001".to_string(),
+            id: "luogu:P1001".to_string(),
+            provider: crate::problem::ProblemProvider::Luogu,
             title: "A+B Problem".to_string(),
             difficulty: Some("入门".to_string()),
             tags: vec!["模拟".to_string()],
             source: Some("Luogu".to_string()),
+            contest: None,
             url: "https://www.luogu.com.cn/problem/P1001".to_string(),
             fetched_at: FixedOffset::east_opt(8 * 3600)
                 .unwrap()
@@ -569,7 +581,8 @@ mod tests {
     fn build_submission_row_includes_user_and_submission_id_columns() {
         let row = build_submission_row(&SubmissionRecord {
             submission_id: 1,
-            problem_id: Some("P1001".to_string()),
+            problem_id: Some("luogu:P1001".to_string()),
+            provider: crate::problem::ProblemProvider::Luogu,
             submitter: "alice".to_string(),
             verdict: "AC".to_string(),
             score: Some(100),
@@ -589,7 +602,8 @@ mod tests {
         let row = build_record_row(&HistoricalSolveRecord {
             revision: "abcdef1234567890".to_string(),
             record: crate::models::SolveRecord {
-                problem_id: "P1001".to_string(),
+                problem_id: "luogu:P1001".to_string(),
+                provider: crate::problem::ProblemProvider::Luogu,
                 title: "A+B Problem".to_string(),
                 verdict: "WA".to_string(),
                 score: None,
@@ -598,6 +612,7 @@ mod tests {
                 difficulty: "入门".to_string(),
                 tags: vec!["模拟".to_string()],
                 source: "Luogu".to_string(),
+                contest: None,
                 submission_id: Some(1),
                 submission_time: None,
                 file_name: "P1001.cpp".to_string(),

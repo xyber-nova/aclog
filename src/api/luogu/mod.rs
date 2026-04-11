@@ -16,6 +16,7 @@ use tracing::{debug, info, warn};
 use crate::{
     config::{AclogPaths, AppConfig},
     domain::{problem::ProblemMetadata, submission::SubmissionRecord},
+    problem::{ProblemProvider, global_problem_id},
 };
 
 use self::{
@@ -131,11 +132,13 @@ impl LuoguClient {
         let source = problem.get("provider").and_then(parse_provider_name);
 
         Ok(Some(ProblemMetadata {
-            id: problem_id.to_string(),
+            id: global_problem_id(ProblemProvider::Luogu, problem_id),
+            provider: ProblemProvider::Luogu,
             title,
             difficulty,
             tags,
             source,
+            contest: None,
             url: format!("{BASE_URL}/problem/{problem_id}"),
             fetched_at: now_in_luogu_timezone(),
         }))

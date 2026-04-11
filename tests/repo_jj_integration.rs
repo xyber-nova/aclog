@@ -91,6 +91,7 @@ impl ProblemProvider for RealRepoOutputDeps {
         &self,
         _config: &AppConfig,
         _paths: &AclogPaths,
+        _provider: aclog::problem::ProblemProvider,
     ) -> Result<HashSet<String>> {
         Ok(self.algorithm_tag_names.lock().unwrap().clone())
     }
@@ -269,7 +270,7 @@ async fn real_jj_record_browse_json_reads_history_views() {
     .unwrap();
 
     let output = deps.outputs.lock().unwrap().join("");
-    assert!(output.contains("\"problem_id\": \"P1005\""));
+    assert!(output.contains("\"problem_id\": \"luogu:P1005\""));
     assert!(output.contains("\"files\""));
 }
 
@@ -279,13 +280,16 @@ async fn real_jj_sync_resume_restores_saved_batch() {
     write_workspace_file(workspace.path(), "P1006.cpp", "int main() {}\n");
 
     let deps = RealRepoOutputDeps::new(workspace.path());
-    deps.insert_metadata("P1006", Some(sample_metadata("P1006")));
-    deps.insert_submissions("P1006", vec![sample_submission(88, "AC")]);
+    deps.insert_metadata("luogu:P1006", Some(sample_metadata("luogu:P1006")));
+    let mut submission = sample_submission(88, "AC");
+    submission.problem_id = Some("luogu:P1006".to_string());
+    submission.provider = aclog::problem::ProblemProvider::Luogu;
+    deps.insert_submissions("luogu:P1006", vec![submission.clone()]);
 
     let paused_ui = FakeUi {
         sync_batch_review_selection: Mutex::new(vec![None]),
         submission_selection: Mutex::new(Some(aclog::domain::record::SyncSelection::Submission(
-            sample_submission(88, "AC"),
+            submission.clone(),
         ))),
         ..FakeUi::default()
     };
@@ -301,7 +305,7 @@ async fn real_jj_sync_resume_restores_saved_batch() {
 
     let resumed_ui = FakeUi {
         submission_selection: Mutex::new(Some(aclog::domain::record::SyncSelection::Submission(
-            sample_submission(88, "AC"),
+            submission,
         ))),
         ..FakeUi::default()
     };
@@ -319,5 +323,5 @@ async fn real_jj_sync_resume_restores_saved_batch() {
 
     assert!(!workspace.path().join(".aclog/sync-session.toml").exists());
     let index = deps.live.load_record_index().await.unwrap();
-    assert_eq!(index.current_by_file()[0].problem_id, "P1006");
+    assert_eq!(index.current_by_file()[0].problem_id, "luogu:P1006");
 }

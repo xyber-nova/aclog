@@ -64,3 +64,28 @@ async fn record_edit_rewrites_only_training_fields() {
     assert!(rewritten[0].1.contains("Verdict: WA"));
     assert!(!rewritten[0].1.contains("Note: 老备注"));
 }
+
+#[tokio::test]
+async fn record_show_rejects_non_luogu_problem_files() {
+    let workspace = workspace_with_config();
+    write_workspace_file(workspace.path(), "CF1234A.cpp", "int main() {}");
+
+    let deps = FakeDeps::default();
+    deps.track_file("CF1234A.cpp");
+
+    let error = run_record_show_with(
+        workspace.path().to_path_buf(),
+        workspace.path().join("CF1234A.cpp"),
+        None,
+        false,
+        &deps,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("受支持的题目标识（当前支持 Luogu / AtCoder）")
+    );
+}

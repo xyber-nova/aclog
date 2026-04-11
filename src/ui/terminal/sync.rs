@@ -31,6 +31,7 @@ use crate::{
             SyncBatchSession, SyncChangeKind, SyncItemStatus, SyncSessionChoice, SyncSessionItem,
         },
     },
+    problem::{human_problem_id, provider_label},
     ui::{
         interaction::{SyncBatchDetailAction, SyncBatchReviewAction},
         terminal::{
@@ -171,8 +172,9 @@ pub(crate) fn run_sync_batch_review_app(
     session: &SyncBatchSession,
 ) -> Result<SyncBatchReviewAction> {
     let mut help_visible = false;
+    let display_indices = preview_item_indices(session);
     let mut state =
-        TableState::default().with_selected(initial_selection_for_count(session.items.len()));
+        TableState::default().with_selected(initial_selection_for_count(display_indices.len()));
 
     loop {
         terminal.draw(|frame| {
@@ -193,19 +195,26 @@ pub(crate) fn run_sync_batch_review_app(
             let header_row = Row::new([
                 Cell::from("文件"),
                 Cell::from("题号"),
+                Cell::from("来源"),
                 Cell::from("类型"),
                 Cell::from("状态"),
                 Cell::from("提交数"),
                 Cell::from("默认候选"),
             ])
             .style(theme::accent_style().add_modifier(Modifier::BOLD));
-            let rows = session
-                .items
+            let rows = display_indices
                 .iter()
+                .filter_map(|index| session.items.get(*index))
                 .map(|item| {
                     Row::new([
                         Cell::from(item.file.clone()),
-                        Cell::from(item.problem_id.clone().unwrap_or_else(|| "-".to_string())),
+                        Cell::from(
+                            item.problem_id
+                                .as_deref()
+                                .map(human_problem_id)
+                                .unwrap_or_else(|| "-".to_string()),
+                        ),
+                        Cell::from(provider_label(item.provider)),
                         Cell::from(change_kind_label(item.kind))
                             .style(theme::change_kind_style(item.kind)),
                         Cell::from(sync_status_label(item.status))
@@ -226,7 +235,8 @@ pub(crate) fn run_sync_batch_review_app(
             let table = Table::new(
                 rows,
                 [
-                    Constraint::Percentage(34),
+                    Constraint::Percentage(28),
+                    Constraint::Length(10),
                     Constraint::Length(10),
                     Constraint::Length(10),
                     Constraint::Length(12),
@@ -242,7 +252,8 @@ pub(crate) fn run_sync_batch_review_app(
 
             let summary = state
                 .selected()
-                .and_then(|index| session.items.get(index))
+                .and_then(|index| display_indices.get(index))
+                .and_then(|index| session.items.get(*index))
                 .map(render_sync_item_summary)
                 .unwrap_or_else(|| "当前没有可处理项".to_string());
             frame.render_widget(text_panel("当前项摘要", summary), detail_area);
@@ -273,31 +284,34 @@ pub(crate) fn run_sync_batch_review_app(
             help_visible = !help_visible;
             continue;
         }
-        if let Some(next) = move_selection(key.code, state.selected(), session.items.len()) {
+        if let Some(next) = move_selection(key.code, state.selected(), display_indices.len()) {
             state.select(next);
             continue;
         }
 
         let selected = state.selected().unwrap_or(0);
-        let Some(item) = session.items.get(selected) else {
+        let Some(item_index) = display_indices.get(selected).copied() else {
+            continue;
+        };
+        let Some(item) = session.items.get(item_index) else {
             continue;
         };
         match key.code {
             KeyCode::Enter if item.status == SyncItemStatus::Pending => {
-                return Ok(SyncBatchReviewAction::Open(selected));
+                return Ok(SyncBatchReviewAction::Open(item_index));
             }
             KeyCode::Char('c')
                 if item.status == SyncItemStatus::Pending
                     && matches!(item.kind, SyncChangeKind::Active) =>
             {
                 return Ok(SyncBatchReviewAction::Decide {
-                    index: selected,
+                    index: item_index,
                     selection: SyncSelection::Chore,
                 });
             }
             KeyCode::Char('s') if item.status == SyncItemStatus::Pending => {
                 return Ok(SyncBatchReviewAction::Decide {
-                    index: selected,
+                    index: item_index,
                     selection: SyncSelection::Skip,
                 });
             }
@@ -308,7 +322,7 @@ pub(crate) fn run_sync_batch_review_app(
                 // 预览页只开放删除项的直接 remove；
                 // active 文件仍然需要进详情页完成绑定，避免把复杂选择塞进列表页。
                 return Ok(SyncBatchReviewAction::Decide {
-                    index: selected,
+                    index: item_index,
                     selection: SyncSelection::Delete,
                 });
             }
@@ -586,12 +600,25 @@ fn sync_item_header_lines(
     let mut lines = vec![
         Line::from(format!("文件: {}", item.file)),
         Line::from(format!(
-            "题号: {}  类型: {}  状态: {}",
-            item.problem_id.as_deref().unwrap_or("-"),
+            "题号: {}",
+            item.problem_id
+                .as_deref()
+                .map(human_problem_id)
+                .unwrap_or_else(|| "-".to_string())
+        )),
+        Line::from(format!("来源: {}", provider_label(item.provider))),
+        Line::from(format!(
+            "类型: {}  状态: {}",
             change_kind_label(item.kind),
             sync_status_label(item.status)
         )),
     ];
+    if let Some(contest) = metadata
+        .and_then(|item| item.contest.as_deref())
+        .or(item.contest.as_deref())
+    {
+        lines.push(Line::from(format!("比赛: {contest}")));
+    }
     if let Some(metadata) = metadata {
         lines.push(Line::from(format!(
             "标题: {}  难度: {}",
@@ -609,7 +636,19 @@ fn sync_item_header_lines(
 fn render_sync_item_summary(item: &SyncSessionItem) -> String {
     let mut lines = vec![
         format!("文件: {}", item.file),
-        format!("题号: {}", item.problem_id.as_deref().unwrap_or("-")),
+        format!(
+            "题号: {}",
+            item.problem_id
+                .as_deref()
+                .map(human_problem_id)
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!("来源: {}", provider_label(item.provider)),
+    ];
+    if let Some(contest) = item.contest.as_deref() {
+        lines.push(format!("比赛: {contest}"));
+    }
+    lines.extend([
         format!("类型: {}", change_kind_label(item.kind)),
         format!("状态: {}", sync_status_label(item.status)),
         format!(
@@ -624,7 +663,7 @@ fn render_sync_item_summary(item: &SyncSessionItem) -> String {
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string())
         ),
-    ];
+    ]);
     if let Some(reason) = item.invalid_reason.as_deref() {
         lines.push(format!("{}状态说明: {reason}", theme::WARNING_SYMBOL));
     }
@@ -638,6 +677,20 @@ fn render_sync_item_summary(item: &SyncSessionItem) -> String {
         );
     }
     lines.join("\n")
+}
+
+fn preview_item_indices(session: &SyncBatchSession) -> Vec<usize> {
+    let mut pending = Vec::new();
+    let mut deferred = Vec::new();
+    for (index, item) in session.items.iter().enumerate() {
+        if item.status == SyncItemStatus::Pending {
+            pending.push(index);
+        } else {
+            deferred.push(index);
+        }
+    }
+    pending.extend(deferred);
+    pending
 }
 
 /// sync 变更类型的人类可读标签。
@@ -661,18 +714,24 @@ fn sync_status_label(status: SyncItemStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
     use crossterm::event::KeyCode;
 
-    use super::{change_kind_label, render_sync_item_summary, sync_status_label};
+    use super::{
+        change_kind_label, preview_item_indices, render_sync_item_summary, sync_status_label,
+    };
     use crate::domain::sync_batch::{
-        SyncChangeKind, SyncItemStatus, SyncSessionItem, SyncWarning, SyncWarningCode,
+        SyncBatchSession, SyncChangeKind, SyncItemStatus, SyncSessionItem, SyncWarning,
+        SyncWarningCode,
     };
 
     #[test]
     fn summary_mentions_warning_and_default_submission() {
         let summary = render_sync_item_summary(&SyncSessionItem {
             file: "P1001.cpp".to_string(),
-            problem_id: Some("P1001".to_string()),
+            problem_id: Some("luogu:P1001".to_string()),
+            provider: crate::problem::ProblemProvider::Luogu,
+            contest: None,
             kind: SyncChangeKind::Active,
             status: SyncItemStatus::Pending,
             submissions: Some(3),
@@ -694,5 +753,72 @@ mod tests {
         assert_eq!(change_kind_label(SyncChangeKind::Deleted), "已删除");
         assert_eq!(sync_status_label(SyncItemStatus::Invalid), "已失效");
         assert!(matches!(KeyCode::Char('s'), KeyCode::Char('s')));
+    }
+
+    #[test]
+    fn preview_lists_pending_items_before_decided_items() {
+        let session = SyncBatchSession {
+            created_at: chrono::FixedOffset::east_opt(8 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2024, 1, 1, 0, 0, 0)
+                .single()
+                .unwrap(),
+            items: vec![
+                SyncSessionItem {
+                    file: "P1001.cpp".to_string(),
+                    problem_id: Some("luogu:P1001".to_string()),
+                    provider: crate::problem::ProblemProvider::Luogu,
+                    contest: None,
+                    kind: SyncChangeKind::Active,
+                    status: SyncItemStatus::Planned,
+                    submissions: None,
+                    default_submission_id: None,
+                    decision: None,
+                    warnings: Vec::new(),
+                    invalid_reason: None,
+                },
+                SyncSessionItem {
+                    file: "P1002.cpp".to_string(),
+                    problem_id: Some("luogu:P1002".to_string()),
+                    provider: crate::problem::ProblemProvider::Luogu,
+                    contest: None,
+                    kind: SyncChangeKind::Active,
+                    status: SyncItemStatus::Pending,
+                    submissions: None,
+                    default_submission_id: None,
+                    decision: None,
+                    warnings: Vec::new(),
+                    invalid_reason: None,
+                },
+                SyncSessionItem {
+                    file: "P1003.cpp".to_string(),
+                    problem_id: Some("luogu:P1003".to_string()),
+                    provider: crate::problem::ProblemProvider::Luogu,
+                    contest: None,
+                    kind: SyncChangeKind::Active,
+                    status: SyncItemStatus::Skipped,
+                    submissions: None,
+                    default_submission_id: None,
+                    decision: None,
+                    warnings: Vec::new(),
+                    invalid_reason: None,
+                },
+                SyncSessionItem {
+                    file: "P1004.cpp".to_string(),
+                    problem_id: Some("luogu:P1004".to_string()),
+                    provider: crate::problem::ProblemProvider::Luogu,
+                    contest: None,
+                    kind: SyncChangeKind::Active,
+                    status: SyncItemStatus::Pending,
+                    submissions: None,
+                    default_submission_id: None,
+                    decision: None,
+                    warnings: Vec::new(),
+                    invalid_reason: None,
+                },
+            ],
+        };
+
+        assert_eq!(preview_item_indices(&session), vec![1, 3, 0, 2]);
     }
 }

@@ -67,8 +67,8 @@ async fn record_list_supports_filters_and_json_output() {
     .unwrap();
 
     let output = deps.outputs().join("");
-    assert!(output.contains("\"problem_id\": \"P1001\""));
-    assert!(!output.contains("\"problem_id\": \"P1002\""));
+    assert!(output.contains("\"problem_id\": \"luogu:P1001\""));
+    assert!(!output.contains("\"problem_id\": \"luogu:P1002\""));
 }
 
 #[test]
@@ -78,7 +78,8 @@ fn record_list_render_output_handles_empty_and_non_empty_views() {
 
     let records = vec![FileRecordSummary {
         revision: "rev".to_string(),
-        problem_id: "P1001".to_string(),
+        problem_id: "luogu:P1001".to_string(),
+        provider: aclog::problem::ProblemProvider::Luogu,
         title: "A+B Problem".to_string(),
         file_name: "P1001.cpp".to_string(),
         verdict: "AC".to_string(),
@@ -87,6 +88,7 @@ fn record_list_render_output_handles_empty_and_non_empty_views() {
         memory_mb: Some(1.5),
         difficulty: "入门".to_string(),
         source: "Luogu".to_string(),
+        contest: None,
         tags: vec!["模拟".to_string()],
         submission_id: Some(1),
         submission_time: Some(

@@ -1,21 +1,29 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fs,
+    path::PathBuf,
+};
 
 use chrono::{FixedOffset, Utc};
 use color_eyre::{
     Result,
     eyre::{WrapErr, eyre},
 };
+use futures::stream::{self, StreamExt, TryStreamExt};
 use tracing::{debug, info, instrument};
 
 use crate::{
     config::AclogPaths,
     domain::{
+        problem::ProblemMetadata,
         record::SyncSelection,
+        submission::SubmissionRecord,
         sync_batch::{
             SyncBatchSession, SyncChangeKind, SyncItemStatus, SyncSessionChoice, SyncSessionItem,
             SyncStoredDecision, SyncWarning, SyncWarningCode,
         },
     },
+    problem::{extract_problem_target, human_problem_id, is_atcoder_task_id, is_luogu_problem_id},
     ui::interaction::{SyncBatchDetailAction, SyncBatchReviewAction, UserInterface},
 };
 
@@ -34,6 +42,14 @@ enum ProcessSessionItemOutcome {
     Back,
     Quit,
 }
+
+struct FreshSyncSessionBuild {
+    session: SyncBatchSession,
+    submissions_by_problem: HashMap<String, Vec<SubmissionRecord>>,
+    metadata_by_problem: HashMap<String, Option<ProblemMetadata>>,
+}
+
+const SYNC_SUBMISSION_PREFETCH_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncOptions {
@@ -59,8 +75,11 @@ pub async fn run(
     info!(changed_files = changed_files.len(), "已收集变更文件");
     debug!(?changed_files, "变更文件详情");
 
-    let fresh_session =
-        build_fresh_session(&paths, &config, deps, &record_index, &changed_files).await?;
+    let FreshSyncSessionBuild {
+        session: fresh_session,
+        mut submissions_by_problem,
+        mut metadata_by_problem,
+    } = build_fresh_session(&paths, &config, deps, &record_index, &changed_files).await?;
     if options.dry_run {
         deps.write_output(&render_sync_preview(&fresh_session))?;
         info!(rows = fresh_session.items.len(), "dry-run 预览已输出");
@@ -100,6 +119,8 @@ pub async fn run(
                     deps,
                     ui,
                     &record_index,
+                    &mut submissions_by_problem,
+                    &mut metadata_by_problem,
                 )
                 .await?
                 {
@@ -127,7 +148,15 @@ pub async fn run(
         }
     }
 
-    let commits = build_commits_from_session(&session, &paths, &config, deps).await?;
+    let commits = build_commits_from_session(
+        &session,
+        &paths,
+        &config,
+        deps,
+        &mut submissions_by_problem,
+        &mut metadata_by_problem,
+    )
+    .await?;
     if !commits.is_empty() {
         deps.create_commits(&commits).await?;
     }
@@ -143,14 +172,18 @@ async fn build_fresh_session(
     deps: &impl AppDeps,
     index: &crate::domain::record_index::RecordIndex,
     changed_files: &[crate::vcs::ProblemFileChange],
-) -> Result<SyncBatchSession> {
+) -> Result<FreshSyncSessionBuild> {
     let mut items = Vec::with_capacity(changed_files.len());
     for change in changed_files {
-        let problem_id = crate::problem::extract_problem_id(&change.path);
+        let Some(target) = extract_problem_target(&change.path) else {
+            continue;
+        };
         let kind = change_kind(change.kind);
-        let mut item = SyncSessionItem {
+        items.push(SyncSessionItem {
             file: change.path.clone(),
-            problem_id: problem_id.clone(),
+            problem_id: Some(target.global_id),
+            provider: target.provider,
+            contest: None,
             kind,
             status: SyncItemStatus::Pending,
             submissions: None,
@@ -158,29 +191,83 @@ async fn build_fresh_session(
             decision: None,
             warnings: Vec::new(),
             invalid_reason: None,
-        };
-        if problem_id.is_none() {
-            item.status = SyncItemStatus::Invalid;
-            item.invalid_reason = Some("无法识别题号".to_string());
-            items.push(item);
-            continue;
-        }
-        if matches!(kind, SyncChangeKind::Active) {
-            let problem_id = problem_id.as_deref().expect("checked above");
-            let submissions = deps
-                .fetch_problem_submissions(config, paths, problem_id)
+        });
+    }
+
+    let mut seen_problem_ids = HashSet::new();
+    let all_problem_ids = items
+        .iter()
+        .filter_map(|item| item.problem_id.clone())
+        .filter(|problem_id| seen_problem_ids.insert(problem_id.clone()))
+        .collect::<Vec<_>>();
+    let metadata_by_problem =
+        stream::iter(all_problem_ids.iter().cloned().map(|problem_id| async {
+            let metadata = deps
+                .resolve_problem_metadata(config, paths, &problem_id)
                 .await?;
-            item.submissions = Some(submissions.len());
-            item.default_submission_id = submissions.first().map(|record| record.submission_id);
-            if let Some(duplicate_warning) = duplicate_warning_for_default(index, &item) {
-                item.warnings.push(duplicate_warning);
+            Ok::<_, color_eyre::Report>((problem_id, metadata))
+        }))
+        .buffer_unordered(SYNC_SUBMISSION_PREFETCH_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+    let mut seen_problem_ids = HashSet::new();
+    let active_problem_ids = items
+        .iter()
+        .filter(|item| matches!(item.kind, SyncChangeKind::Active))
+        .filter_map(|item| item.problem_id.clone())
+        .filter(|problem_id| seen_problem_ids.insert(problem_id.clone()))
+        .collect::<Vec<_>>();
+
+    let submissions_by_problem =
+        stream::iter(active_problem_ids.into_iter().map(|problem_id| async {
+            let submissions = deps
+                .fetch_problem_submissions(config, paths, &problem_id)
+                .await?;
+            Ok::<_, color_eyre::Report>((problem_id, submissions))
+        }))
+        .buffer_unordered(SYNC_SUBMISSION_PREFETCH_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+    for item in &mut items {
+        if let Some(problem_id) = item.problem_id.as_deref() {
+            if let Some(metadata) = metadata_by_problem
+                .get(problem_id)
+                .and_then(|item| item.as_ref())
+            {
+                item.provider = metadata.provider;
+                item.contest = metadata.contest.clone();
             }
         }
-        items.push(item);
+        if !matches!(item.kind, SyncChangeKind::Active) {
+            continue;
+        }
+        let problem_id = item
+            .problem_id
+            .as_deref()
+            .expect("active sync item has problem id");
+        let submissions = submissions_by_problem
+            .get(problem_id)
+            .expect("prefetched submissions should exist for active item");
+        item.submissions = Some(submissions.len());
+        item.default_submission_id = submissions.first().map(|record| record.submission_id);
+        if let Some(duplicate_warning) = duplicate_warning_for_default(index, item) {
+            item.warnings.push(duplicate_warning);
+        }
     }
-    Ok(SyncBatchSession {
-        created_at: now_in_luogu_timezone(),
-        items,
+
+    Ok(FreshSyncSessionBuild {
+        session: SyncBatchSession {
+            created_at: now_in_luogu_timezone(),
+            items,
+        },
+        submissions_by_problem,
+        metadata_by_problem,
     })
 }
 
@@ -236,10 +323,20 @@ fn merge_sync_sessions(
             ) {
                 item.status = previous.status;
                 item.decision = previous.decision;
+                if item.contest.is_none() {
+                    item.contest = previous.contest;
+                }
             }
         }
     }
     for (_, mut stale) in existing_by_key {
+        if stale.problem_id.as_deref().is_none_or(|problem_id| {
+            !is_luogu_problem_id(problem_id)
+                && !is_atcoder_task_id(problem_id)
+                && crate::problem::split_global_problem_id(problem_id).is_none()
+        }) {
+            continue;
+        }
         stale.status = SyncItemStatus::Invalid;
         stale.invalid_reason = Some("当前工作区状态已变化，该批次项已失效".to_string());
         stale.warnings.push(SyncWarning {
@@ -258,19 +355,27 @@ async fn process_session_item(
     deps: &impl AppDeps,
     ui: &impl UserInterface,
     index: &crate::domain::record_index::RecordIndex,
+    submissions_by_problem: &mut HashMap<String, Vec<SubmissionRecord>>,
+    metadata_by_problem: &mut HashMap<String, Option<ProblemMetadata>>,
 ) -> Result<ProcessSessionItemOutcome> {
     let metadata = match item.problem_id.as_deref() {
         Some(problem_id) => {
-            deps.resolve_problem_metadata(config, paths, problem_id)
-                .await?
+            ensure_problem_metadata(metadata_by_problem, problem_id, paths, config, deps).await?
         }
         None => None,
     };
+    if item.contest.is_none() {
+        item.contest = metadata.as_ref().and_then(|item| item.contest.clone());
+    }
     let submissions = if matches!(item.kind, SyncChangeKind::Active) {
         match item.problem_id.as_deref() {
             Some(problem_id) => {
-                deps.fetch_problem_submissions(config, paths, problem_id)
-                    .await?
+                ensure_problem_submissions(submissions_by_problem, problem_id, paths, config, deps)
+                    .await?;
+                submissions_by_problem
+                    .get(problem_id)
+                    .cloned()
+                    .unwrap_or_default()
             }
             None => Vec::new(),
         }
@@ -360,6 +465,8 @@ async fn build_commits_from_session(
     paths: &AclogPaths,
     config: &crate::config::AppConfig,
     deps: &impl AppDeps,
+    submissions_by_problem: &mut HashMap<String, Vec<SubmissionRecord>>,
+    metadata_by_problem: &mut HashMap<String, Option<ProblemMetadata>>,
 ) -> Result<Vec<(String, String)>> {
     let mut commits = Vec::new();
     for item in &session.items {
@@ -370,18 +477,20 @@ async fn build_commits_from_session(
             .problem_id
             .as_deref()
             .ok_or_else(|| eyre!("批次项 {} 缺少题号，无法生成提交", item.file))?;
-        let metadata = deps
-            .resolve_problem_metadata(config, paths, problem_id)
-            .await?;
+        let metadata =
+            ensure_problem_metadata(metadata_by_problem, problem_id, paths, config, deps).await?;
         let selection = match item
             .decision
             .as_ref()
             .ok_or_else(|| eyre!("批次项 {} 缺少决策结果", item.file))?
         {
             SyncStoredDecision::Submission { submission_id } => {
-                let submissions = deps
-                    .fetch_problem_submissions(config, paths, problem_id)
+                ensure_problem_submissions(submissions_by_problem, problem_id, paths, config, deps)
                     .await?;
+                let submissions = submissions_by_problem
+                    .get(problem_id)
+                    .cloned()
+                    .unwrap_or_default();
                 let submission = submissions
                     .into_iter()
                     .find(|record| record.submission_id == *submission_id)
@@ -406,6 +515,25 @@ async fn build_commits_from_session(
     Ok(commits)
 }
 
+async fn ensure_problem_metadata(
+    metadata_by_problem: &mut HashMap<String, Option<ProblemMetadata>>,
+    problem_id: &str,
+    paths: &AclogPaths,
+    config: &crate::config::AppConfig,
+    deps: &impl AppDeps,
+) -> Result<Option<ProblemMetadata>> {
+    if !metadata_by_problem.contains_key(problem_id) {
+        let metadata = deps
+            .resolve_problem_metadata(config, paths, problem_id)
+            .await?;
+        metadata_by_problem.insert(problem_id.to_string(), metadata);
+    }
+    Ok(metadata_by_problem
+        .get(problem_id)
+        .cloned()
+        .expect("metadata should exist after insertion"))
+}
+
 fn duplicate_warning_for_default(
     index: &crate::domain::record_index::RecordIndex,
     item: &SyncSessionItem,
@@ -425,6 +553,23 @@ fn duplicate_warning_for_default(
             default_submission_id
         ),
     })
+}
+
+async fn ensure_problem_submissions(
+    submissions_by_problem: &mut HashMap<String, Vec<SubmissionRecord>>,
+    problem_id: &str,
+    paths: &AclogPaths,
+    config: &crate::config::AppConfig,
+    deps: &impl AppDeps,
+) -> Result<()> {
+    if submissions_by_problem.contains_key(problem_id) {
+        return Ok(());
+    }
+    let submissions = deps
+        .fetch_problem_submissions(config, paths, problem_id)
+        .await?;
+    submissions_by_problem.insert(problem_id.to_string(), submissions);
+    Ok(())
 }
 
 fn load_sync_session(paths: &AclogPaths) -> Result<Option<SyncBatchSession>> {
@@ -475,7 +620,7 @@ fn render_sync_preview(session: &SyncBatchSession) -> String {
     }
 
     let mut lines = vec![crate::output_style::header(
-        "文件\t题号\t变更类型\t当前状态\t提交记录数\t默认候选\t告警",
+        "文件\t题号\t来源\t变更类型\t当前状态\t提交记录数\t默认候选\t告警",
     )];
     for row in &session.items {
         let submissions = row
@@ -498,9 +643,13 @@ fn render_sync_preview(session: &SyncBatchSession) -> String {
                 .join(" | ")
         };
         lines.push(format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             row.file,
-            row.problem_id.as_deref().unwrap_or("-"),
+            row.problem_id
+                .as_deref()
+                .map(human_problem_id)
+                .unwrap_or_else(|| "-".to_string()),
+            crate::problem::provider_label(row.provider),
             crate::output_style::sync_change_kind(row.kind),
             crate::output_style::sync_status(row),
             submissions,
@@ -563,7 +712,9 @@ mod tests {
             items: vec![
                 SyncSessionItem {
                     file: "P1001.cpp".to_string(),
-                    problem_id: Some("P1001".to_string()),
+                    problem_id: Some("luogu:P1001".to_string()),
+                    provider: crate::problem::ProblemProvider::Luogu,
+                    contest: None,
                     kind: SyncChangeKind::Active,
                     status: SyncItemStatus::Pending,
                     submissions: Some(2),
@@ -578,6 +729,8 @@ mod tests {
                 SyncSessionItem {
                     file: "notes.txt".to_string(),
                     problem_id: None,
+                    provider: crate::problem::ProblemProvider::Unknown,
+                    contest: None,
                     kind: SyncChangeKind::Active,
                     status: SyncItemStatus::Invalid,
                     submissions: None,
@@ -600,7 +753,9 @@ mod tests {
             created_at: super::now_in_luogu_timezone(),
             items: vec![SyncSessionItem {
                 file: "P1001.cpp".to_string(),
-                problem_id: Some("P1001".to_string()),
+                problem_id: Some("luogu:P1001".to_string()),
+                provider: crate::problem::ProblemProvider::Luogu,
+                contest: None,
                 kind: SyncChangeKind::Active,
                 status: SyncItemStatus::Pending,
                 submissions: Some(1),
@@ -615,7 +770,9 @@ mod tests {
             items: vec![
                 SyncSessionItem {
                     file: "P1001.cpp".to_string(),
-                    problem_id: Some("P1001".to_string()),
+                    problem_id: Some("luogu:P1001".to_string()),
+                    provider: crate::problem::ProblemProvider::Luogu,
+                    contest: None,
                     kind: SyncChangeKind::Active,
                     status: SyncItemStatus::Planned,
                     submissions: Some(1),
@@ -626,7 +783,9 @@ mod tests {
                 },
                 SyncSessionItem {
                     file: "gone/P1002.cpp".to_string(),
-                    problem_id: Some("P1002".to_string()),
+                    problem_id: Some("luogu:P1002".to_string()),
+                    provider: crate::problem::ProblemProvider::Luogu,
+                    contest: None,
                     kind: SyncChangeKind::Active,
                     status: SyncItemStatus::Skipped,
                     submissions: Some(0),
@@ -649,7 +808,9 @@ mod tests {
         assert_eq!(
             preview_status(&SyncSessionItem {
                 file: "P1001.cpp".to_string(),
-                problem_id: Some("P1001".to_string()),
+                problem_id: Some("luogu:P1001".to_string()),
+                provider: crate::problem::ProblemProvider::Luogu,
+                contest: None,
                 kind: SyncChangeKind::Deleted,
                 status: SyncItemStatus::Pending,
                 submissions: None,

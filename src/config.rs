@@ -20,6 +20,8 @@ pub struct AppConfig {
 pub struct UserConfig {
     pub luogu_uid: String,
     pub luogu_cookie: String,
+    #[serde(default)]
+    pub atcoder_user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +74,7 @@ impl Default for AppConfig {
             user: UserConfig {
                 luogu_uid: String::new(),
                 luogu_cookie: String::new(),
+                atcoder_user_id: None,
             },
             settings: SettingsConfig {
                 metadata_ttl_days: default_metadata_ttl_days(),

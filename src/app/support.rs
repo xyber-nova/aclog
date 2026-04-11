@@ -13,6 +13,7 @@ use crate::{
         submission::SubmissionRecord,
         training_fields::normalize_optional_training_text,
     },
+    problem::human_problem_id,
     ui::interaction::UserInterface,
     utils::{normalize_verdict, verdict_equals},
 };
@@ -22,6 +23,8 @@ use super::deps::JjRepository;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SolutionFileTarget {
     pub(crate) problem_id: String,
+    pub(crate) provider: crate::problem::ProblemProvider,
+    pub(crate) raw_problem_id: String,
     pub(crate) repo_relative_path: String,
 }
 
@@ -79,13 +82,19 @@ pub(crate) async fn resolve_solution_file_target(
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| eyre!("无法解析文件名 {}", canonical_path.display()))?;
-    let problem_id = crate::problem::extract_problem_id(file_name)
-        .ok_or_else(|| eyre!("无法从文件名 {} 提取题号", file_name))?;
+    let parsed = crate::problem::extract_problem_target(file_name).ok_or_else(|| {
+        eyre!(
+            "无法从文件名 {} 提取受支持的题目标识（当前支持 Luogu / AtCoder）",
+            file_name
+        )
+    })?;
     if !repo.is_tracked_file(&repo_relative_path).await? {
         return Err(eyre!("文件 {} 未被当前 jj 工作区跟踪", repo_relative_path));
     }
     Ok(SolutionFileTarget {
-        problem_id,
+        problem_id: parsed.global_id,
+        provider: parsed.provider,
+        raw_problem_id: parsed.raw_id,
         repo_relative_path,
     })
 }
@@ -134,7 +143,13 @@ pub(crate) fn select_submission_for_record(
             .iter()
             .find(|record| record.submission_id == submission_id)
             .cloned()
-            .ok_or_else(|| eyre!("提交记录 {} 不属于题目 {}", submission_id, problem_id));
+            .ok_or_else(|| {
+                eyre!(
+                    "提交记录 {} 不属于题目 {}",
+                    submission_id,
+                    human_problem_id(problem_id)
+                )
+            });
     }
 
     ui.select_record_submission(problem_id, metadata, submissions)?
@@ -435,6 +450,7 @@ mod tests {
                 revision: "a".to_string(),
                 record: SolveRecord {
                     problem_id: "P1001".to_string(),
+                    provider: crate::problem::ProblemProvider::Luogu,
                     title: "A".to_string(),
                     verdict: "AC".to_string(),
                     score: None,
@@ -443,6 +459,7 @@ mod tests {
                     difficulty: "入门".to_string(),
                     tags: vec![],
                     source: "Luogu".to_string(),
+                    contest: None,
                     submission_id: Some(1),
                     submission_time: None,
                     file_name: "P1001.cpp".to_string(),
@@ -454,6 +471,7 @@ mod tests {
                 revision: "b".to_string(),
                 record: SolveRecord {
                     problem_id: "P1001".to_string(),
+                    provider: crate::problem::ProblemProvider::Luogu,
                     title: "A".to_string(),
                     verdict: "WA".to_string(),
                     score: None,
@@ -462,6 +480,7 @@ mod tests {
                     difficulty: "入门".to_string(),
                     tags: vec![],
                     source: "Luogu".to_string(),
+                    contest: None,
                     submission_id: Some(2),
                     submission_time: None,
                     file_name: "nested/P1001.cpp".to_string(),

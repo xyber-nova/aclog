@@ -334,7 +334,7 @@ mod tests {
 
         let index = handle.load_record_index().await.unwrap();
         assert_eq!(index.current_by_file().len(), 1);
-        assert_eq!(index.current_by_file()[0].problem_id, "P1001");
+        assert_eq!(index.current_by_file()[0].problem_id, "luogu:P1001");
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 ## Purpose
 
-为当前工作区提供基于本地 `jj` 做题历史的统计能力，并在需要时借助洛谷标签类型字典生成人工筛过的算法标签统计。
+为当前工作区提供基于本地 `jj` 做题历史的统计能力，并在需要时借助算法标签字典生成人工筛过的标签统计。
 
 ## Requirements
 
@@ -17,36 +17,61 @@
 - **THEN** 系统必须从该路径加载工作区并按该时间窗口生成统计结果
 
 ### Requirement: stats 命令必须基于本地 solve 历史生成统计
-系统 MUST 以当前工作区本地 `jj` 历史中的 `solve(...)` commit 作为做题统计的主体数据源；`chore(...)`、`remove(...)` 以及无法识别的提交不得计入统计。为完成算法标签分类，系统可以读取本地或远端的标签类型字典。
+系统 MUST 以当前工作区本地 `jj` 历史中的 `solve(...)` commit 作为做题统计的主体数据源；`chore(...)`、`remove(...)` 以及无法识别的提交不得计入统计。系统必须支持多 provider 记录共存，并根据当前 provider 页签决定统计口径与可用功能。
 
-#### Scenario: 工作区包含 solve、chore 和 remove 提交
-- **WHEN** 统计流程遍历工作区本地历史
-- **THEN** 系统必须只把 `solve(...)` commit 计入做题统计
+#### Scenario: All 页签汇总多 provider solve 历史
+- **WHEN** 工作区中同时存在 Luogu 与 AtCoder 的标准 `solve(...)` 记录
+- **THEN** 系统必须能够在 `All` provider 页签中汇总这些记录的总体统计
 - **AND** 系统不得把 `chore(...)` 或 `remove(...)` commit 计入结果
 
-#### Scenario: 历史中存在非项目格式提交
-- **WHEN** 统计流程遇到不匹配项目 `solve(...)` message 结构的提交
-- **THEN** 系统必须忽略这些提交
-- **AND** 系统不得为其猜测题号、结果或难度
-
-#### Scenario: 标签类型字典缓存缺失
-- **WHEN** 用户执行 `aclog stats` 且本地标签类型字典缓存不存在或已过期
-- **THEN** 系统可以请求 `/_lfe/tags` 刷新标签字典
-- **AND** 系统必须继续以本地 `solve(...)` 历史作为做题统计主体数据源
+#### Scenario: provider 页签只统计对应来源
+- **WHEN** 用户切换到某个单一 provider 页签
+- **THEN** 系统必须只使用该 provider 的 `solve(...)` 历史生成统计结果
+- **AND** 系统不得把其他 provider 的记录混入当前页签统计
 
 ### Requirement: stats 的标签统计必须只使用算法标签
-系统 MUST 仅使用算法标签生成标签统计；来源、时间、地区、特殊题目等非算法标签不得进入统计结果，但 `ProblemMetadata.tags` 和 `solve(...)` commit 中的原始标签不得被截断。
+系统 MUST 仅在存在可靠标签体系的 provider 上生成算法标签统计；provider 缺少等价标签体系时，系统必须对标签分布和标签加练建议采用显式降级，而不得伪造标签口径。
 
-#### Scenario: 题目标签同时包含算法与非算法标签
-- **WHEN** 系统从 `/_lfe/tags` 和题目元数据解析标签
-- **THEN** 系统必须保留题目的原始标签信息用于元数据和 commit message
-- **AND** 系统必须在统计阶段根据标签类型只保留算法标签
-- **AND** 系统不得把来源、时间、地区或特殊题目标签计入统计数据
+#### Scenario: Luogu 页签使用算法标签统计
+- **WHEN** 用户位于 Luogu provider 页签
+- **THEN** 系统必须继续使用洛谷标签类型字典生成算法标签统计
+- **AND** 系统必须保留现有标签分布与标签加练建议体验
 
-#### Scenario: 标签缓存包含类型信息
-- **WHEN** 系统缓存 `/_lfe/tags` 返回的标签字典
-- **THEN** 缓存结构必须保留标签名称、类型和父标签信息
-- **AND** 系统必须将该缓存持久化到工作区 `.aclog` 目录中
+#### Scenario: AtCoder 页签缺少可靠算法标签体系
+- **WHEN** 用户位于 AtCoder provider 页签
+- **THEN** 系统不得伪造与 Luogu 等价的算法标签统计
+- **AND** 标签分布区域与标签加练建议必须显示显式降级状态或“不支持”
+
+#### Scenario: All 页签混合多 provider 数据
+- **WHEN** 用户位于 `All` provider 页签且当前工作区存在多个 provider 的记录
+- **THEN** 系统不得错误混合 provider-specific 标签统计
+- **AND** 标签相关区域必须继续采用显式降级或只显示可靠 provider 的独立口径说明
+
+### Requirement: stats 工作台必须以页签方式切换 overview 与 review
+系统 MUST 将 stats 概览、题目复习和标签加练实现为同一工作台内的同层模式；`Tab` MUST 作为主模式切换键在三者之间循环，`Esc` MUST 在任一建议模式下先返回 overview，并在 overview 中作为退出当前工作台的允许方式，`q` MUST 在任意模式下直接退出。
+
+#### Scenario: 在三种 stats 模式之间循环切换
+- **WHEN** 用户位于 stats 工作台并按下 `Tab`
+- **THEN** 系统必须按 `overview -> 题目复习 -> 标签加练 -> overview` 的顺序循环切换
+- **AND** 如果目标模式当前没有数据，系统必须显示该模式的空状态而不是拒绝切换
+
+#### Scenario: 从任一建议模式返回 overview
+- **WHEN** 用户位于题目复习或标签加练模式并按下 `Esc`
+- **THEN** 系统必须返回 overview 模式
+- **AND** 系统不得直接退出整个 stats 工作台
+
+### Requirement: stats 页面必须显式展示当前 provider 统计范围
+系统 MUST 在 stats 概览、题目复习和标签加练页面中显式展示当前 provider 页签与统计范围，使用户知道当前看到的是 Luogu、AtCoder 还是 All 汇总口径。
+
+#### Scenario: 打开任意 provider 的 overview
+- **WHEN** 用户进入某个 provider 页签下的 overview
+- **THEN** 页面必须展示当前 provider 与统计范围说明
+- **AND** 总体指标必须与该 provider 页签口径保持一致
+
+#### Scenario: 从建议模式返回 overview
+- **WHEN** 用户在任一 provider 页签下的题目复习或标签加练模式按下 `Esc`
+- **THEN** 系统必须返回同一 provider 页签下的 overview
+- **AND** 系统不得隐式跳回其他 provider 页签
 
 ### Requirement: stats 界面必须同时展示唯一题目和全部记录两种口径
 系统 MUST 同时展示按题号去重后的唯一题目统计，以及全部 `solve(...)` 记录统计，以区分“做过多少题”和“做题活动量”。在此基础上，系统还必须能识别首次 AC、重复练习和当前非 AC 状态。
@@ -127,19 +152,6 @@
 - **WHEN** 用户在 stats 界面中切换到任一建议模式
 - **THEN** 页面必须明确显示当前处于题目复习模式或标签加练模式
 - **AND** 建议列表、建议详情和可钻取动作必须与统计概览形成清晰区分
-
-### Requirement: stats 工作台必须以页签方式切换 overview 与 review
-系统 MUST 将 stats 概览、题目复习和标签加练实现为同一工作台内的同层模式；`Tab` MUST 作为主模式切换键在三者之间循环，`Esc` MUST 在任一建议模式下先返回 overview，并在 overview 中作为退出当前工作台的允许方式，`q` MUST 在任意模式下直接退出。
-
-#### Scenario: 在三种 stats 模式之间循环切换
-- **WHEN** 用户位于 stats 工作台并按下 `Tab`
-- **THEN** 系统必须按 `overview -> 题目复习 -> 标签加练 -> overview` 的顺序循环切换
-- **AND** 如果目标模式当前没有数据，系统必须显示该模式的空状态而不是拒绝切换
-
-#### Scenario: 从任一建议模式返回 overview
-- **WHEN** 用户位于题目复习或标签加练模式并按下 `Esc`
-- **THEN** 系统必须返回 overview 模式
-- **AND** 系统不得直接退出整个 stats 工作台
 
 ### Requirement: stats 页面必须显式展示帮助与钻取入口
 系统 MUST 在 stats 页面中显式展示当前支持的钻取入口和帮助提示，使用户知道如何进入题目复习、标签加练、文件浏览、题目浏览或退出当前页面。

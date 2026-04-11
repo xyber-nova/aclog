@@ -297,6 +297,7 @@ async fn run_record_command(command: RecordCommands) -> Result<()> {
             crate::app::run_record_browse(
                 workspace,
                 crate::app::BrowserQuery {
+                    provider: crate::app::BrowserProviderView::All,
                     root_view: match view {
                         BrowserViewArg::Files => crate::app::BrowserRootView::Files,
                         BrowserViewArg::Problems => crate::app::BrowserRootView::Problems,

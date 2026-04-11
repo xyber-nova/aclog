@@ -5,10 +5,12 @@ use tracing::{info, instrument};
 
 use crate::{
     config::AclogPaths,
+    domain::browser::BrowserProviderView,
     domain::stats::{
-        ReviewSettings, StatsDashboard, build_review_suggestions,
+        ReviewSettings, StatsDashboard, StatsProviderDashboard, build_review_suggestions,
         summarize_solve_records_with_window,
     },
+    problem::ProblemProvider,
     ui::interaction::UserInterface,
 };
 
@@ -39,28 +41,57 @@ pub async fn run(
         .iter()
         .map(|entry| entry.record.clone())
         .collect::<Vec<_>>();
-    let algorithm_tag_names = deps.load_algorithm_tag_names(&config, &paths).await?;
-    let suggestions = build_review_suggestions(
+    let luogu_algorithm_tag_names = deps
+        .load_algorithm_tag_names(&config, &paths, ProblemProvider::Luogu)
+        .await?;
+    let review_settings = ReviewSettings {
+        problem_interval_days: config.settings.review_problem_interval_days(),
+        tag_window_days: config.settings.practice_tag_window_days(),
+        tag_target_problems: config.settings.practice_tag_target_problems(),
+    };
+    let provider_dashboards = build_provider_dashboards(
         &records,
-        ReviewSettings {
-            problem_interval_days: config.settings.review_problem_interval_days(),
-            tag_window_days: config.settings.practice_tag_window_days(),
-            tag_target_problems: config.settings.practice_tag_target_problems(),
-        },
-        Some(&algorithm_tag_names),
+        options.days,
+        review_settings,
+        &luogu_algorithm_tag_names,
     );
-    let summary =
-        summarize_solve_records_with_window(&records, options.days, Some(&algorithm_tag_names));
+    let default_dashboard = provider_dashboards
+        .iter()
+        .find(|item| item.provider == BrowserProviderView::Luogu)
+        .or_else(|| {
+            provider_dashboards
+                .iter()
+                .find(|item| item.provider == BrowserProviderView::All)
+        })
+        .cloned()
+        .unwrap_or_else(|| StatsProviderDashboard {
+            provider: BrowserProviderView::Luogu,
+            summary: summarize_solve_records_with_window(
+                &records,
+                options.days,
+                Some(&luogu_algorithm_tag_names),
+            ),
+            problem_reviews: Vec::new(),
+            tag_practice_suggestions: Vec::new(),
+            tag_features_supported: false,
+        });
 
     if options.review {
         let output = if options.json {
-            format!("{}\n", serde_json::to_string_pretty(&suggestions)?)
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&crate::domain::stats::ReviewSuggestions {
+                    problem_reviews: default_dashboard.problem_reviews.clone(),
+                    tag_practice_suggestions: default_dashboard.tag_practice_suggestions.clone(),
+                })?
+            )
         } else {
             let dashboard = StatsDashboard {
-                summary,
-                problem_reviews: suggestions.problem_reviews.clone(),
-                tag_practice_suggestions: suggestions.tag_practice_suggestions.clone(),
+                summary: default_dashboard.summary.clone(),
+                problem_reviews: default_dashboard.problem_reviews.clone(),
+                tag_practice_suggestions: default_dashboard.tag_practice_suggestions.clone(),
                 start_in_review: true,
+                provider_dashboards: provider_dashboards.clone(),
             };
             ui.show_stats_dashboard(&paths.workspace_root, &dashboard, &index)?;
             info!(
@@ -72,34 +103,96 @@ pub async fn run(
         };
         deps.write_output(&output)?;
         info!(
-            problem_reviews = suggestions.problem_reviews.len(),
-            tag_practice_suggestions = suggestions.tag_practice_suggestions.len(),
+            problem_reviews = default_dashboard.problem_reviews.len(),
+            tag_practice_suggestions = default_dashboard.tag_practice_suggestions.len(),
             "复习建议已输出"
         );
         return Ok(());
     }
 
     if options.json {
-        deps.write_output(&format!("{}\n", serde_json::to_string_pretty(&summary)?))?;
+        deps.write_output(&format!(
+            "{}\n",
+            serde_json::to_string_pretty(&default_dashboard.summary)?
+        ))?;
     } else {
         ui.show_stats_dashboard(
             &paths.workspace_root,
             &StatsDashboard {
-                summary: summary.clone(),
-                problem_reviews: suggestions.problem_reviews,
-                tag_practice_suggestions: suggestions.tag_practice_suggestions,
+                summary: default_dashboard.summary.clone(),
+                problem_reviews: default_dashboard.problem_reviews.clone(),
+                tag_practice_suggestions: default_dashboard.tag_practice_suggestions.clone(),
                 start_in_review: false,
+                provider_dashboards: provider_dashboards.clone(),
             },
             &index,
         )?;
     }
 
     info!(
-        total_solve_records = summary.total_solve_records,
-        unique_problem_count = summary.unique_problem_count,
+        total_solve_records = default_dashboard.summary.total_solve_records,
+        unique_problem_count = default_dashboard.summary.unique_problem_count,
         "统计完成"
     );
     Ok(())
+}
+
+fn build_provider_dashboards(
+    records: &[crate::domain::record::SolveRecord],
+    days: Option<i64>,
+    settings: ReviewSettings,
+    luogu_algorithm_tag_names: &std::collections::HashSet<String>,
+) -> Vec<StatsProviderDashboard> {
+    [
+        BrowserProviderView::Luogu,
+        BrowserProviderView::AtCoder,
+        BrowserProviderView::All,
+    ]
+    .into_iter()
+    .map(|provider| {
+        let filtered_records = filter_records_by_provider(records, provider);
+        let tag_features_supported = matches!(provider, BrowserProviderView::Luogu);
+        let mut summary = summarize_solve_records_with_window(
+            &filtered_records,
+            days,
+            tag_features_supported.then_some(luogu_algorithm_tag_names),
+        );
+        let mut suggestions = build_review_suggestions(
+            &filtered_records,
+            settings,
+            tag_features_supported.then_some(luogu_algorithm_tag_names),
+        );
+        if !tag_features_supported {
+            summary.tag_counts.clear();
+            suggestions.tag_practice_suggestions.clear();
+            for item in &mut suggestions.problem_reviews {
+                item.matched_tags.clear();
+            }
+        }
+        StatsProviderDashboard {
+            provider,
+            summary,
+            problem_reviews: suggestions.problem_reviews,
+            tag_practice_suggestions: suggestions.tag_practice_suggestions,
+            tag_features_supported,
+        }
+    })
+    .collect()
+}
+
+fn filter_records_by_provider(
+    records: &[crate::domain::record::SolveRecord],
+    provider: BrowserProviderView,
+) -> Vec<crate::domain::record::SolveRecord> {
+    records
+        .iter()
+        .filter(|record| match provider {
+            BrowserProviderView::All => true,
+            BrowserProviderView::Luogu => record.provider == ProblemProvider::Luogu,
+            BrowserProviderView::AtCoder => record.provider == ProblemProvider::AtCoder,
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
