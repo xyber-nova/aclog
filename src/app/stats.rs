@@ -5,7 +5,10 @@ use tracing::{info, instrument};
 
 use crate::{
     config::AclogPaths,
-    domain::stats::{StatsDashboard, build_review_candidates, summarize_solve_records_with_window},
+    domain::stats::{
+        ReviewSettings, StatsDashboard, build_review_suggestions,
+        summarize_solve_records_with_window,
+    },
     ui::interaction::UserInterface,
 };
 
@@ -37,25 +40,42 @@ pub async fn run(
         .map(|entry| entry.record.clone())
         .collect::<Vec<_>>();
     let algorithm_tag_names = deps.load_algorithm_tag_names(&config, &paths).await?;
-    let candidates = build_review_candidates(&records, options.days, Some(&algorithm_tag_names));
+    let suggestions = build_review_suggestions(
+        &records,
+        ReviewSettings {
+            problem_interval_days: config.settings.review_problem_interval_days(),
+            tag_window_days: config.settings.practice_tag_window_days(),
+            tag_target_problems: config.settings.practice_tag_target_problems(),
+        },
+        Some(&algorithm_tag_names),
+    );
     let summary =
         summarize_solve_records_with_window(&records, options.days, Some(&algorithm_tag_names));
 
     if options.review {
         let output = if options.json {
-            format!("{}\n", serde_json::to_string_pretty(&candidates)?)
+            format!("{}\n", serde_json::to_string_pretty(&suggestions)?)
         } else {
             let dashboard = StatsDashboard {
                 summary,
-                review_candidates: candidates.clone(),
+                problem_reviews: suggestions.problem_reviews.clone(),
+                tag_practice_suggestions: suggestions.tag_practice_suggestions.clone(),
                 start_in_review: true,
             };
             ui.show_stats_dashboard(&paths.workspace_root, &dashboard, &index)?;
-            info!(review_candidates = candidates.len(), "复习建议已输出");
+            info!(
+                problem_reviews = dashboard.problem_reviews.len(),
+                tag_practice_suggestions = dashboard.tag_practice_suggestions.len(),
+                "复习建议已输出"
+            );
             return Ok(());
         };
         deps.write_output(&output)?;
-        info!(review_candidates = candidates.len(), "复习建议已输出");
+        info!(
+            problem_reviews = suggestions.problem_reviews.len(),
+            tag_practice_suggestions = suggestions.tag_practice_suggestions.len(),
+            "复习建议已输出"
+        );
         return Ok(());
     }
 
@@ -66,7 +86,8 @@ pub async fn run(
             &paths.workspace_root,
             &StatsDashboard {
                 summary: summary.clone(),
-                review_candidates: candidates,
+                problem_reviews: suggestions.problem_reviews,
+                tag_practice_suggestions: suggestions.tag_practice_suggestions,
                 start_in_review: false,
             },
             &index,
@@ -82,56 +103,62 @@ pub async fn run(
 }
 
 #[cfg(test)]
-fn render_review_candidates(candidates: &[crate::domain::stats::ReviewCandidate]) -> String {
-    if candidates.is_empty() {
-        return "当前没有可用的复习建议\n".to_string();
+fn render_review_suggestions(suggestions: &crate::domain::stats::ReviewSuggestions) -> String {
+    if suggestions.problem_reviews.is_empty() && suggestions.tag_practice_suggestions.is_empty() {
+        return "当前没有可用的复习建议或加练建议\n".to_string();
     }
 
-    let mut lines = vec!["类型\t标签\t结果\t原因".to_string()];
-    for item in candidates {
+    let mut lines = vec!["题目复习".to_string()];
+    for item in &suggestions.problem_reviews {
+        lines.push(format!(
+            "{}\t{}\tP{}\t{}",
+            item.problem_id,
+            item.verdict,
+            item.priority,
+            item.reasons.join("；")
+        ));
+    }
+    lines.push(String::new());
+    lines.push("标签加练".to_string());
+    for item in &suggestions.tag_practice_suggestions {
         lines.push(format!(
             "{}\t{}\t{}\t{}",
-            review_kind_label(&item.kind),
-            item.label,
-            item.verdict
-                .as_deref()
-                .map(|value| crate::utils::normalize_verdict(value).into_owned())
-                .unwrap_or_else(|| "-".to_string()),
-            item.reason
+            item.tag, item.recent_unique_problems, item.priority, item.reason
         ));
     }
     format!("{}\n", lines.join("\n"))
 }
 
 #[cfg(test)]
-fn review_kind_label(kind: &str) -> &str {
-    match kind {
-        "stale" => "久未复习",
-        "retry" => "建议重做",
-        "weakness" => "薄弱点",
-        _ => kind,
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use crate::domain::stats::ReviewCandidate;
+    use crate::domain::stats::{ProblemReviewCandidate, ReviewSuggestions, TagPracticeSuggestion};
 
-    use super::render_review_candidates;
+    use super::render_review_suggestions;
 
     #[test]
-    fn render_review_candidates_outputs_table() {
-        let text = render_review_candidates(&[ReviewCandidate {
-            kind: "retry".to_string(),
-            label: "P1001".to_string(),
-            problem_id: Some("P1001".to_string()),
-            title: Some("A".to_string()),
-            verdict: Some("WA".to_string()),
-            last_submission_time: None,
-            reason: "最近状态仍为 WA".to_string(),
-        }]);
+    fn render_review_suggestions_outputs_two_sections() {
+        let text = render_review_suggestions(&ReviewSuggestions {
+            problem_reviews: vec![ProblemReviewCandidate {
+                problem_id: "P1001".to_string(),
+                title: "A".to_string(),
+                verdict: "WA".to_string(),
+                last_submission_time: None,
+                priority: 6,
+                reasons: vec!["最近状态仍为 WA".to_string()],
+                matched_tags: vec!["模拟".to_string()],
+            }],
+            tag_practice_suggestions: vec![TagPracticeSuggestion {
+                tag: "二分".to_string(),
+                recent_unique_problems: 1,
+                lifetime_unique_problems: 1,
+                priority: 399,
+                reason: "最近 60 天仅练过 1 题，建议补样本".to_string(),
+                recent_unstable_signal_count: 0,
+            }],
+        });
 
-        assert!(text.contains("类型\t标签"));
-        assert!(text.contains("建议重做"));
+        assert!(text.contains("题目复习"));
+        assert!(text.contains("标签加练"));
+        assert!(text.contains("建议补样本"));
     }
 }

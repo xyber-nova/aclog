@@ -394,7 +394,7 @@ pub fn workspace_with_config() -> TempDir {
     fs::create_dir_all(aclog_dir.join("problems")).unwrap();
     fs::write(
         aclog_dir.join("config.toml"),
-        "[user]\nluogu_uid = \"123\"\nluogu_cookie = \"cookie\"\n\n[settings]\nmetadata_ttl_days = 7\nproblem_metadata_ttl_days = 7\nluogu_mappings_ttl_days = 7\nluogu_tags_ttl_days = 7\n",
+        "[user]\nluogu_uid = \"123\"\nluogu_cookie = \"cookie\"\n\n[settings]\nmetadata_ttl_days = 7\nproblem_metadata_ttl_days = 7\nluogu_mappings_ttl_days = 7\nluogu_tags_ttl_days = 7\nreview_problem_interval_days = 21\npractice_tag_window_days = 60\npractice_tag_target_problems = 5\n",
     )
     .unwrap();
     dir
@@ -405,7 +405,7 @@ pub async fn init_real_workspace() -> TempDir {
     aclog::config::init_workspace(dir.path()).await.unwrap();
     fs::write(
         dir.path().join(".aclog/config.toml"),
-        "[user]\nluogu_uid = \"123\"\nluogu_cookie = \"cookie\"\n\n[settings]\nmetadata_ttl_days = 7\nproblem_metadata_ttl_days = 7\nluogu_mappings_ttl_days = 7\nluogu_tags_ttl_days = 7\n",
+        "[user]\nluogu_uid = \"123\"\nluogu_cookie = \"cookie\"\n\n[settings]\nmetadata_ttl_days = 7\nproblem_metadata_ttl_days = 7\nluogu_mappings_ttl_days = 7\nluogu_tags_ttl_days = 7\nreview_problem_interval_days = 21\npractice_tag_window_days = 60\npractice_tag_target_problems = 5\n",
     )
     .unwrap();
     dir

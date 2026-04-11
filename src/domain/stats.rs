@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use chrono::{DateTime, Duration, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
@@ -23,21 +23,55 @@ pub struct StatsSummary {
     pub tag_counts: Vec<(String, usize)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewSettings {
+    pub problem_interval_days: i64,
+    pub tag_window_days: i64,
+    pub tag_target_problems: usize,
+}
+
+impl ReviewSettings {
+    pub fn normalized(self) -> Self {
+        Self {
+            problem_interval_days: self.problem_interval_days.max(1),
+            tag_window_days: self.tag_window_days.max(1),
+            tag_target_problems: self.tag_target_problems.max(1),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReviewSuggestions {
+    pub problem_reviews: Vec<ProblemReviewCandidate>,
+    pub tag_practice_suggestions: Vec<TagPracticeSuggestion>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReviewCandidate {
-    pub kind: String,
-    pub label: String,
-    pub problem_id: Option<String>,
-    pub title: Option<String>,
-    pub verdict: Option<String>,
+pub struct ProblemReviewCandidate {
+    pub problem_id: String,
+    pub title: String,
+    pub verdict: String,
     pub last_submission_time: Option<DateTime<FixedOffset>>,
+    pub priority: i32,
+    pub reasons: Vec<String>,
+    pub matched_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagPracticeSuggestion {
+    pub tag: String,
+    pub recent_unique_problems: usize,
+    pub lifetime_unique_problems: usize,
+    pub priority: i32,
     pub reason: String,
+    pub recent_unstable_signal_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatsDashboard {
     pub summary: StatsSummary,
-    pub review_candidates: Vec<ReviewCandidate>,
+    pub problem_reviews: Vec<ProblemReviewCandidate>,
+    pub tag_practice_suggestions: Vec<TagPracticeSuggestion>,
     pub start_in_review: bool,
 }
 
@@ -153,117 +187,209 @@ pub fn summarize_solve_records_with_window(
     }
 }
 
-pub fn build_review_candidates(
+pub fn build_review_suggestions(
     records: &[SolveRecord],
-    window_days: Option<i64>,
+    settings: ReviewSettings,
     algorithm_tag_names: Option<&HashSet<String>>,
-) -> Vec<ReviewCandidate> {
-    let cutoff = window_days.map(|days| Utc::now() - Duration::days(days));
-    let stale_cutoff = cutoff.unwrap_or_else(|| Utc::now() - Duration::days(30));
-    let index = build_problem_histories(records);
-    let mut candidates = Vec::new();
-
-    for (problem_id, history) in &index {
-        let latest = history.last().expect("history should not be empty");
-        if let Some(submission_time) = latest.submission_time {
-            if submission_time.with_timezone(&Utc) < stale_cutoff {
-                candidates.push(ReviewCandidate {
-                    kind: "stale".to_string(),
-                    label: problem_id.clone(),
-                    problem_id: Some(problem_id.clone()),
-                    title: Some(latest.title.clone()),
-                    verdict: Some(normalize_verdict(&latest.verdict).into_owned()),
-                    last_submission_time: latest.submission_time,
-                    reason: format!(
-                        "距离上次练习已超过 {} 天",
-                        (Utc::now() - submission_time.with_timezone(&Utc)).num_days()
-                    ),
-                });
-            }
-        }
-
-        let non_ac_attempts = history
-            .iter()
-            .filter(|record| !is_ac_verdict(&record.verdict))
-            .count();
-        if !is_ac_verdict(&latest.verdict)
-            || non_ac_attempts >= 2
-            || latest.training.mistakes.is_some()
-        {
-            let reason = if !is_ac_verdict(&latest.verdict) {
-                format!("最近状态仍为 {}", normalize_verdict(&latest.verdict))
-            } else if non_ac_attempts >= 2 {
-                format!("历史里至少有 {} 次非 AC 尝试", non_ac_attempts)
-            } else {
-                "记录中包含待复盘的错因".to_string()
-            };
-            candidates.push(ReviewCandidate {
-                kind: "retry".to_string(),
-                label: problem_id.clone(),
-                problem_id: Some(problem_id.clone()),
-                title: Some(latest.title.clone()),
-                verdict: Some(normalize_verdict(&latest.verdict).into_owned()),
-                last_submission_time: latest.submission_time,
-                reason,
-            });
-        }
+) -> ReviewSuggestions {
+    let settings = settings.normalized();
+    ReviewSuggestions {
+        problem_reviews: build_problem_review_candidates(records, settings, algorithm_tag_names),
+        tag_practice_suggestions: build_tag_practice_suggestions(
+            records,
+            settings,
+            algorithm_tag_names,
+        ),
     }
-
-    let activity_records = records
-        .iter()
-        .filter(|record| is_within_window(record, cutoff))
-        .collect::<Vec<_>>();
-    let activity_records = if window_days.is_some() {
-        activity_records
-    } else {
-        records.iter().collect::<Vec<_>>()
-    };
-    let mut weakness_scores: HashMap<String, usize> = HashMap::new();
-    for record in activity_records {
-        let filtered_tags = filter_algorithm_tags(&record.tags, algorithm_tag_names);
-        for tag in filtered_tags {
-            let mut score = 0;
-            if !is_ac_verdict(&record.verdict) {
-                score += 1;
-            }
-            if record
-                .training
-                .confidence
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case("low"))
-            {
-                score += 1;
-            }
-            if score > 0 {
-                *weakness_scores.entry(tag).or_insert(0) += score;
-            }
-        }
-    }
-    let mut weakness_tags = weakness_scores.into_iter().collect::<Vec<_>>();
-    weakness_tags.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-    for (tag, score) in weakness_tags {
-        candidates.push(ReviewCandidate {
-            kind: "weakness".to_string(),
-            label: tag.clone(),
-            problem_id: None,
-            title: None,
-            verdict: None,
-            last_submission_time: None,
-            reason: format!("最近窗口内该标签累计出现 {} 次非 AC 或低熟练度信号", score),
-        });
-    }
-
-    candidates.sort_by(|left, right| {
-        left.kind
-            .cmp(&right.kind)
-            .then_with(|| left.label.cmp(&right.label))
-            .then_with(|| right.last_submission_time.cmp(&left.last_submission_time))
-    });
-    candidates
 }
 
 pub fn latest_records_by_file(records: &[HistoricalSolveRecord]) -> Vec<FileRecordSummary> {
     RecordIndex::build(records).current_by_file().to_vec()
+}
+
+fn build_problem_review_candidates(
+    records: &[SolveRecord],
+    settings: ReviewSettings,
+    algorithm_tag_names: Option<&HashSet<String>>,
+) -> Vec<ProblemReviewCandidate> {
+    let histories = build_problem_histories(records);
+    let mut candidates = Vec::new();
+
+    for (problem_id, history) in &histories {
+        let latest = history.last().expect("history should not be empty");
+        let mut priority = 0;
+        let mut reasons = Vec::new();
+
+        if !is_ac_verdict(&latest.verdict) {
+            priority += 6;
+            reasons.push(format!(
+                "最近状态仍为 {}",
+                normalize_verdict(&latest.verdict)
+            ));
+        }
+        if latest.training.mistakes.is_some() {
+            priority += 3;
+            reasons.push("记录中包含待复盘错因".to_string());
+        }
+        if latest
+            .training
+            .confidence
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("low"))
+        {
+            priority += 3;
+            reasons.push("最近熟练度标记为 low".to_string());
+        }
+
+        let extra_non_ac_attempts = history
+            .iter()
+            .rev()
+            .skip(1)
+            .take(2)
+            .filter(|record| !is_ac_verdict(&record.verdict))
+            .count();
+        if extra_non_ac_attempts > 0 {
+            let bonus = (extra_non_ac_attempts as i32 * 2).min(4);
+            priority += bonus;
+            reasons.push(format!(
+                "最近 3 次记录中还有 {} 次非 AC",
+                extra_non_ac_attempts
+            ));
+        }
+
+        if let Some(submission_time) = latest.submission_time {
+            let elapsed_days = (Utc::now() - submission_time.with_timezone(&Utc)).num_days();
+            let interval_bonus =
+                review_interval_bonus(elapsed_days, settings.problem_interval_days);
+            if interval_bonus > 0 {
+                priority += interval_bonus;
+                reasons.push(format!(
+                    "已达到 {} 天复习间隔（距上次练习 {} 天）",
+                    settings.problem_interval_days, elapsed_days
+                ));
+            }
+        }
+
+        if priority == 0 {
+            continue;
+        }
+
+        candidates.push(ProblemReviewCandidate {
+            problem_id: problem_id.clone(),
+            title: latest.title.clone(),
+            verdict: normalize_verdict(&latest.verdict).into_owned(),
+            last_submission_time: latest.submission_time,
+            priority,
+            reasons,
+            matched_tags: filter_algorithm_tags(&latest.tags, algorithm_tag_names),
+        });
+    }
+
+    candidates.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.last_submission_time.cmp(&right.last_submission_time))
+            .then_with(|| left.problem_id.cmp(&right.problem_id))
+    });
+    candidates
+}
+
+fn build_tag_practice_suggestions(
+    records: &[SolveRecord],
+    settings: ReviewSettings,
+    algorithm_tag_names: Option<&HashSet<String>>,
+) -> Vec<TagPracticeSuggestion> {
+    let recent_cutoff = Utc::now() - Duration::days(settings.tag_window_days);
+    let mut lifetime_unique_problems: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut recent_unique_problems: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut recent_unstable_signals: BTreeMap<String, usize> = BTreeMap::new();
+
+    for record in records {
+        let tags = filter_algorithm_tags(&record.tags, algorithm_tag_names);
+        if tags.is_empty() {
+            continue;
+        }
+
+        for tag in tags {
+            lifetime_unique_problems
+                .entry(tag.clone())
+                .or_default()
+                .insert(record.problem_id.clone());
+
+            if is_within_window(record, Some(recent_cutoff)) {
+                recent_unique_problems
+                    .entry(tag.clone())
+                    .or_default()
+                    .insert(record.problem_id.clone());
+
+                if !is_ac_verdict(&record.verdict)
+                    || record
+                        .training
+                        .confidence
+                        .as_deref()
+                        .is_some_and(|value| value.eq_ignore_ascii_case("low"))
+                {
+                    *recent_unstable_signals.entry(tag.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let mut suggestions = Vec::new();
+    for (tag, lifetime_problems) in lifetime_unique_problems {
+        let lifetime_count = lifetime_problems.len();
+        let recent_count = recent_unique_problems
+            .get(&tag)
+            .map(BTreeSet::len)
+            .unwrap_or_default();
+        if recent_count >= settings.tag_target_problems {
+            continue;
+        }
+
+        let unstable_count = recent_unstable_signals
+            .get(&tag)
+            .copied()
+            .unwrap_or_default();
+        let gap = settings.tag_target_problems.saturating_sub(recent_count);
+        let priority = gap as i32 * 100 - (lifetime_count.min(99) as i32);
+        let mut reason = format!(
+            "最近 {} 天仅练过 {} 题，建议补样本",
+            settings.tag_window_days, recent_count
+        );
+        if unstable_count > 0 {
+            reason.push_str(&format!("；最近这类题也有 {} 次不稳信号", unstable_count));
+        }
+
+        suggestions.push(TagPracticeSuggestion {
+            tag,
+            recent_unique_problems: recent_count,
+            lifetime_unique_problems: lifetime_count,
+            priority,
+            reason,
+            recent_unstable_signal_count: unstable_count,
+        });
+    }
+
+    suggestions.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.tag.cmp(&right.tag))
+    });
+    suggestions
+}
+
+fn review_interval_bonus(elapsed_days: i64, interval_days: i64) -> i32 {
+    if elapsed_days < interval_days {
+        0
+    } else if elapsed_days >= interval_days * 3 {
+        3
+    } else if elapsed_days >= interval_days * 2 {
+        2
+    } else {
+        1
+    }
 }
 
 fn filter_algorithm_tags(
@@ -351,10 +477,11 @@ fn solve_record_is_newer(candidate: &SolveRecord, current: &SolveRecord) -> bool
 mod tests {
     use std::collections::HashSet;
 
-    use chrono::{FixedOffset, TimeZone};
+    use chrono::{FixedOffset, TimeZone, Utc};
 
     use super::{
-        StatsSummary, build_review_candidates, latest_records_by_file, summarize_solve_records,
+        ProblemReviewCandidate, ReviewSettings, StatsSummary, TagPracticeSuggestion,
+        build_review_suggestions, latest_records_by_file, summarize_solve_records,
     };
     use crate::domain::record::{
         FileRecordSummary, HistoricalSolveRecord, SolveRecord, TrainingFields,
@@ -458,12 +585,212 @@ mod tests {
     }
 
     #[test]
-    fn build_review_candidates_returns_stale_retry_and_weakness_entries() {
+    fn build_review_suggestions_includes_immediate_problem_review() {
+        let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
+        let records = vec![SolveRecord {
+            problem_id: "P1001".to_string(),
+            title: "A".to_string(),
+            verdict: "WA".to_string(),
+            score: None,
+            time_ms: None,
+            memory_mb: None,
+            difficulty: "入门".to_string(),
+            tags: vec!["模拟".to_string()],
+            source: "Luogu".to_string(),
+            submission_id: Some(1),
+            submission_time: Some(now - chrono::Duration::days(1)),
+            file_name: "P1001.cpp".to_string(),
+            training: TrainingFields {
+                mistakes: Some("边界".to_string()),
+                confidence: Some("low".to_string()),
+                ..TrainingFields::default()
+            },
+            source_order: 0,
+        }];
+
+        let suggestions = build_review_suggestions(
+            &records,
+            ReviewSettings {
+                problem_interval_days: 21,
+                tag_window_days: 60,
+                tag_target_problems: 5,
+            },
+            Some(&HashSet::from(["模拟".to_string()])),
+        );
+
+        assert_eq!(suggestions.problem_reviews.len(), 1);
+        let candidate = &suggestions.problem_reviews[0];
+        assert_eq!(candidate.problem_id, "P1001");
+        assert!(candidate.priority >= 12);
+        assert!(
+            candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("最近状态仍为"))
+        );
+        assert!(
+            candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("待复盘错因"))
+        );
+        assert!(
+            candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("熟练度"))
+        );
+    }
+
+    #[test]
+    fn build_review_suggestions_adds_interval_bonus_for_stable_ac() {
+        let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
+        let records = vec![SolveRecord {
+            problem_id: "P2001".to_string(),
+            title: "Stable".to_string(),
+            verdict: "AC".to_string(),
+            score: None,
+            time_ms: None,
+            memory_mb: None,
+            difficulty: "入门".to_string(),
+            tags: vec!["二分".to_string()],
+            source: "Luogu".to_string(),
+            submission_id: Some(2),
+            submission_time: Some(now - chrono::Duration::days(50)),
+            file_name: "P2001.cpp".to_string(),
+            training: TrainingFields::default(),
+            source_order: 0,
+        }];
+
+        let suggestions = build_review_suggestions(
+            &records,
+            ReviewSettings {
+                problem_interval_days: 21,
+                tag_window_days: 60,
+                tag_target_problems: 5,
+            },
+            Some(&HashSet::from(["二分".to_string()])),
+        );
+
+        assert_eq!(
+            suggestions.problem_reviews,
+            vec![ProblemReviewCandidate {
+                problem_id: "P2001".to_string(),
+                title: "Stable".to_string(),
+                verdict: "AC".to_string(),
+                last_submission_time: records[0].submission_time,
+                priority: 2,
+                reasons: vec!["已达到 21 天复习间隔（距上次练习 50 天）".to_string()],
+                matched_tags: vec!["二分".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn build_review_suggestions_skips_interval_review_without_submission_time() {
+        let records = vec![SolveRecord {
+            problem_id: "P3001".to_string(),
+            title: "NoTime".to_string(),
+            verdict: "AC".to_string(),
+            score: None,
+            time_ms: None,
+            memory_mb: None,
+            difficulty: "入门".to_string(),
+            tags: vec!["图论".to_string()],
+            source: "Luogu".to_string(),
+            submission_id: None,
+            submission_time: None,
+            file_name: "P3001.cpp".to_string(),
+            training: TrainingFields::default(),
+            source_order: 0,
+        }];
+
+        let suggestions = build_review_suggestions(
+            &records,
+            ReviewSettings {
+                problem_interval_days: 21,
+                tag_window_days: 60,
+                tag_target_problems: 5,
+            },
+            Some(&HashSet::from(["图论".to_string()])),
+        );
+
+        assert!(suggestions.problem_reviews.is_empty());
+    }
+
+    #[test]
+    fn build_review_suggestions_generates_tag_practice_without_weakness_label() {
+        let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
         let records = vec![
             SolveRecord {
-                problem_id: "P1001".to_string(),
+                problem_id: "P4001".to_string(),
                 title: "A".to_string(),
+                verdict: "AC".to_string(),
+                score: None,
+                time_ms: None,
+                memory_mb: None,
+                difficulty: "入门".to_string(),
+                tags: vec!["数论".to_string()],
+                source: "Luogu".to_string(),
+                submission_id: Some(1),
+                submission_time: Some(now - chrono::Duration::days(10)),
+                file_name: "P4001.cpp".to_string(),
+                training: TrainingFields::default(),
+                source_order: 0,
+            },
+            SolveRecord {
+                problem_id: "P4002".to_string(),
+                title: "B".to_string(),
                 verdict: "WA".to_string(),
+                score: None,
+                time_ms: None,
+                memory_mb: None,
+                difficulty: "入门".to_string(),
+                tags: vec!["数论".to_string()],
+                source: "Luogu".to_string(),
+                submission_id: Some(2),
+                submission_time: Some(now - chrono::Duration::days(5)),
+                file_name: "P4002.cpp".to_string(),
+                training: TrainingFields {
+                    confidence: Some("low".to_string()),
+                    ..TrainingFields::default()
+                },
+                source_order: 1,
+            },
+        ];
+
+        let suggestions = build_review_suggestions(
+            &records,
+            ReviewSettings {
+                problem_interval_days: 21,
+                tag_window_days: 60,
+                tag_target_problems: 5,
+            },
+            Some(&HashSet::from(["数论".to_string()])),
+        );
+
+        assert_eq!(
+            suggestions.tag_practice_suggestions,
+            vec![TagPracticeSuggestion {
+                tag: "数论".to_string(),
+                recent_unique_problems: 2,
+                lifetime_unique_problems: 2,
+                priority: 298,
+                reason: "最近 60 天仅练过 2 题，建议补样本；最近这类题也有 1 次不稳信号"
+                    .to_string(),
+                recent_unstable_signal_count: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn build_review_suggestions_sorts_problem_reviews_by_priority_then_time() {
+        let now = Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
+        let records = vec![
+            SolveRecord {
+                problem_id: "P5001".to_string(),
+                title: "Late".to_string(),
+                verdict: "AC".to_string(),
                 score: None,
                 time_ms: None,
                 memory_mb: None,
@@ -471,65 +798,47 @@ mod tests {
                 tags: vec!["模拟".to_string()],
                 source: "Luogu".to_string(),
                 submission_id: Some(1),
-                submission_time: Some(
-                    FixedOffset::east_opt(8 * 3600)
-                        .unwrap()
-                        .with_ymd_and_hms(2024, 1, 1, 0, 0, 0)
-                        .single()
-                        .unwrap(),
-                ),
-                file_name: "P1001.cpp".to_string(),
-                training: TrainingFields {
-                    mistakes: Some("边界错".to_string()),
-                    confidence: Some("low".to_string()),
-                    ..TrainingFields::default()
-                },
-                source_order: 1,
-            },
-            SolveRecord {
-                problem_id: "P1002".to_string(),
-                title: "B".to_string(),
-                verdict: "AC".to_string(),
-                score: None,
-                time_ms: None,
-                memory_mb: None,
-                difficulty: "普及-".to_string(),
-                tags: vec!["二分".to_string()],
-                source: "Luogu".to_string(),
-                submission_id: Some(2),
-                submission_time: Some(
-                    FixedOffset::east_opt(8 * 3600)
-                        .unwrap()
-                        .with_ymd_and_hms(2024, 1, 2, 0, 0, 0)
-                        .single()
-                        .unwrap(),
-                ),
-                file_name: "P1002.cpp".to_string(),
+                submission_time: Some(now - chrono::Duration::days(70)),
+                file_name: "P5001.cpp".to_string(),
                 training: TrainingFields::default(),
                 source_order: 0,
             },
+            SolveRecord {
+                problem_id: "P5002".to_string(),
+                title: "Wrong".to_string(),
+                verdict: "WA".to_string(),
+                score: None,
+                time_ms: None,
+                memory_mb: None,
+                difficulty: "入门".to_string(),
+                tags: vec!["模拟".to_string()],
+                source: "Luogu".to_string(),
+                submission_id: Some(2),
+                submission_time: Some(now - chrono::Duration::days(2)),
+                file_name: "P5002.cpp".to_string(),
+                training: TrainingFields::default(),
+                source_order: 1,
+            },
         ];
-        let algorithm_tags = HashSet::from(["模拟".to_string(), "二分".to_string()]);
 
-        let candidates = build_review_candidates(&records, None, Some(&algorithm_tags));
+        let suggestions = build_review_suggestions(
+            &records,
+            ReviewSettings {
+                problem_interval_days: 21,
+                tag_window_days: 60,
+                tag_target_problems: 5,
+            },
+            Some(&HashSet::from(["模拟".to_string()])),
+        );
 
-        assert!(
-            candidates.iter().any(|item| {
-                item.kind == "retry" && item.problem_id.as_deref() == Some("P1001")
-            })
-        );
-        assert!(
-            candidates.iter().any(|item| {
-                item.kind == "stale" && item.problem_id.as_deref() == Some("P1001")
-            })
-        );
-        assert!(
-            candidates
+        assert_eq!(
+            suggestions
+                .problem_reviews
                 .iter()
-                .any(|item| item.kind == "weakness" && item.label == "模拟")
+                .map(|item| item.problem_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["P5002", "P5001"]
         );
-        assert!(!candidates.is_empty());
-        let _json_like = serde_json::to_string(&candidates).unwrap();
     }
 
     #[test]
